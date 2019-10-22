@@ -79,8 +79,6 @@
 
 #define nr_syscalls ((syscall_table_size)/4)
 
-#define NMI_MASK 0x04000000
-
 #ifdef CONFIG_PREEMPT
 #define preempt_stop(clobbers)	DISABLE_INTERRUPTS(clobbers); TRACE_IRQS_OFF
 #else
@@ -336,6 +334,10 @@ ENTRY(ret_from_fork)
 END(ret_from_fork)
 
 /*
+ * Interrupt exit functions should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
+/*
  * Return to user mode is not as complex as all this looks,
  * but we want the default path for a system call return to
  * go as quickly as possible which is why some of this is
@@ -345,32 +347,8 @@ END(ret_from_fork)
 	# userspace resumption stub bypassing syscall exit tracing
 	ALIGN
 	RING0_PTREGS_FRAME
-
 ret_from_exception:
 	preempt_stop(CLBR_ANY)
-	GET_THREAD_INFO(%ebp)
-	movl PT_EFLAGS(%esp), %eax	# mix EFLAGS and CS
-	movb PT_CS(%esp), %al
-	andl $(X86_EFLAGS_VM | SEGMENT_RPL_MASK), %eax
-	cmpl $USER_RPL, %eax
-	jae resume_userspace	# returning to v8086 or userspace
-	testl $NMI_MASK,TI_preempt_count(%ebp)
-	jz resume_kernel		/* Not nested over NMI ? */
-	testw $X86_EFLAGS_TF, PT_EFLAGS(%esp)
-	jnz resume_kernel		/*
-					 * If single-stepping an NMI handler,
-					 * use the normal iret path instead of
-					 * the popf/lret because lret would be
-					 * single-stepped. It should not
-					 * happen : it will reactivate NMIs
-					 * prematurely.
-					 */
-	TRACE_IRQS_IRET
-	RESTORE_REGS
-	addl $4, %esp			# skip orig_eax/error_code
-	CFI_ADJUST_CFA_OFFSET -4
-	INTERRUPT_RETURN_NMI_SAFE
-
 ret_from_intr:
 	GET_THREAD_INFO(%ebp)
 check_userspace:
@@ -409,6 +387,10 @@ need_resched:
 END(resume_kernel)
 #endif
 	CFI_ENDPROC
+/*
+ * End of kprobes section
+ */
+	.popsection
 
 /* SYSENTER_RETURN points to after the "sysenter" instruction in
    the vsyscall page.  See vsyscall-sysentry.S, which defines the symbol.  */
@@ -539,6 +521,10 @@ sysexit_audit:
 	PTGS_TO_GS_EX
 ENDPROC(ia32_sysenter_target)
 
+/*
+ * syscall stub including irq exit should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
 	# system call handler stub
 ENTRY(system_call)
 	RING0_INT_FRAME			# can't unwind into user space anyway
@@ -731,26 +717,69 @@ syscall_badsys:
 	jmp resume_userspace
 END(syscall_badsys)
 	CFI_ENDPROC
+/*
+ * End of kprobes section
+ */
+	.popsection
 
 /*
  * System calls that need a pt_regs pointer.
  */
-#define PTREGSCALL(name) \
+#define PTREGSCALL0(name) \
 	ALIGN; \
 ptregs_##name: \
 	leal 4(%esp),%eax; \
 	jmp sys_##name;
 
-PTREGSCALL(iopl)
-PTREGSCALL(fork)
-PTREGSCALL(clone)
-PTREGSCALL(vfork)
-PTREGSCALL(execve)
-PTREGSCALL(sigaltstack)
-PTREGSCALL(sigreturn)
-PTREGSCALL(rt_sigreturn)
-PTREGSCALL(vm86)
-PTREGSCALL(vm86old)
+#define PTREGSCALL1(name) \
+	ALIGN; \
+ptregs_##name: \
+	leal 4(%esp),%edx; \
+	movl (PT_EBX+4)(%esp),%eax; \
+	jmp sys_##name;
+
+#define PTREGSCALL2(name) \
+	ALIGN; \
+ptregs_##name: \
+	leal 4(%esp),%ecx; \
+	movl (PT_ECX+4)(%esp),%edx; \
+	movl (PT_EBX+4)(%esp),%eax; \
+	jmp sys_##name;
+
+#define PTREGSCALL3(name) \
+	ALIGN; \
+ptregs_##name: \
+	leal 4(%esp),%eax; \
+	pushl %eax; \
+	movl PT_EDX(%eax),%ecx; \
+	movl PT_ECX(%eax),%edx; \
+	movl PT_EBX(%eax),%eax; \
+	call sys_##name; \
+	addl $4,%esp; \
+	ret
+
+PTREGSCALL1(iopl)
+PTREGSCALL0(fork)
+PTREGSCALL0(vfork)
+PTREGSCALL3(execve)
+PTREGSCALL2(sigaltstack)
+PTREGSCALL0(sigreturn)
+PTREGSCALL0(rt_sigreturn)
+PTREGSCALL2(vm86)
+PTREGSCALL1(vm86old)
+
+/* Clone is an oddball.  The 4th arg is in %edi */
+	ALIGN;
+ptregs_clone:
+	leal 4(%esp),%eax
+	pushl %eax
+	pushl PT_EDI(%eax)
+	movl PT_EDX(%eax),%ecx
+	movl PT_ECX(%eax),%edx
+	movl PT_EBX(%eax),%eax
+	call sys_clone
+	addl $8,%esp
+	ret
 
 .macro FIXUP_ESPFIX_STACK
 /*
@@ -840,6 +869,10 @@ common_interrupt:
 ENDPROC(common_interrupt)
 	CFI_ENDPROC
 
+/*
+ *  Irq entries should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
 #define BUILD_INTERRUPT3(name, nr, fn)	\
 ENTRY(name)				\
 	RING0_INT_FRAME;		\
@@ -896,10 +929,6 @@ ENTRY(native_iret)
 	.long native_iret, iret_exc
 .previous
 END(native_iret)
-
-ENTRY(native_nmi_return)
-	NATIVE_INTERRUPT_RETURN_NMI_SAFE # Should we deal with popf exception ?
-END(native_nmi_return)
 
 ENTRY(native_irq_enable_sysexit)
 	sti
@@ -1010,16 +1039,16 @@ ENTRY(spurious_interrupt_bug)
 	jmp error_code
 	CFI_ENDPROC
 END(spurious_interrupt_bug)
+/*
+ * End of kprobes section
+ */
+	.popsection
 
 ENTRY(kernel_thread_helper)
 	pushl $0		# fake return address for unwinder
 	CFI_STARTPROC
-	movl %edx,%eax
-	push %edx
-	CFI_ADJUST_CFA_OFFSET 4
-	call *%ebx
-	push %eax
-	CFI_ADJUST_CFA_OFFSET 4
+	movl %edi,%eax
+	call *%esi
 	call do_exit
 	ud2			# padding for call trace
 	CFI_ENDPROC
@@ -1215,17 +1244,14 @@ END(ftrace_graph_caller)
 
 .globl return_to_handler
 return_to_handler:
-	pushl $0
 	pushl %eax
-	pushl %ecx
 	pushl %edx
 	movl %ebp, %eax
 	call ftrace_return_to_handler
-	movl %eax, 0xc(%esp)
+	movl %eax, %ecx
 	popl %edx
-	popl %ecx
 	popl %eax
-	ret
+	jmp *%ecx
 #endif
 
 .section .rodata,"a"

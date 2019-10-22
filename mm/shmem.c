@@ -29,7 +29,6 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/swap.h>
-#include <linux/ima.h>
 
 static struct vfsmount *shm_mnt;
 
@@ -434,6 +433,8 @@ static swp_entry_t *shmem_swp_alloc(struct shmem_inode_info *info, unsigned long
 
 		spin_unlock(&info->lock);
 		page = shmem_dir_alloc(mapping_gfp_mask(inode->i_mapping));
+		if (page)
+			set_page_private(page, 0);
 		spin_lock(&info->lock);
 
 		if (!page) {
@@ -1220,7 +1221,6 @@ static int shmem_getpage(struct inode *inode, unsigned long idx,
 	struct shmem_sb_info *sbinfo;
 	struct page *filepage = *pagep;
 	struct page *swappage;
-	struct page *prealloc_page = NULL;
 	swp_entry_t *entry;
 	swp_entry_t swap;
 	gfp_t gfp;
@@ -1245,6 +1245,7 @@ repeat:
 		filepage = find_lock_page(mapping, idx);
 	if (filepage && PageUptodate(filepage))
 		goto done;
+	error = 0;
 	gfp = mapping_gfp_mask(mapping);
 	if (!filepage) {
 		/*
@@ -1255,19 +1256,7 @@ repeat:
 		if (error)
 			goto failed;
 		radix_tree_preload_end();
-		if (sgp != SGP_READ && !prealloc_page) {
-			/* We don't care if this fails */
-			prealloc_page = shmem_alloc_page(gfp, info, idx);
-			if (prealloc_page) {
-				if (mem_cgroup_cache_charge(prealloc_page,
-						current->mm, GFP_KERNEL)) {
-					page_cache_release(prealloc_page);
-					prealloc_page = NULL;
-				}
-			}
-		}
 	}
-	error = 0;
 
 	spin_lock(&info->lock);
 	shmem_recalc_inode(inode);
@@ -1416,38 +1405,28 @@ repeat:
 		if (!filepage) {
 			int ret;
 
-			if (!prealloc_page) {
-				spin_unlock(&info->lock);
-				filepage = shmem_alloc_page(gfp, info, idx);
-				if (!filepage) {
-					shmem_unacct_blocks(info->flags, 1);
-					shmem_free_blocks(inode, 1);
-					error = -ENOMEM;
-					goto failed;
-				}
-				SetPageSwapBacked(filepage);
+			spin_unlock(&info->lock);
+			filepage = shmem_alloc_page(gfp, info, idx);
+			if (!filepage) {
+				shmem_unacct_blocks(info->flags, 1);
+				shmem_free_blocks(inode, 1);
+				error = -ENOMEM;
+				goto failed;
+			}
+			SetPageSwapBacked(filepage);
 
-				/*
-				 * Precharge page while we can wait, compensate
-				 * after
-				 */
-				error = mem_cgroup_cache_charge(filepage,
-					current->mm, GFP_KERNEL);
-				if (error) {
-					page_cache_release(filepage);
-					shmem_unacct_blocks(info->flags, 1);
-					shmem_free_blocks(inode, 1);
-					filepage = NULL;
-					goto failed;
-				}
-
-				spin_lock(&info->lock);
-			} else {
-				filepage = prealloc_page;
-				prealloc_page = NULL;
-				SetPageSwapBacked(filepage);
+			/* Precharge page while we can wait, compensate after */
+			error = mem_cgroup_cache_charge(filepage, current->mm,
+					GFP_KERNEL);
+			if (error) {
+				page_cache_release(filepage);
+				shmem_unacct_blocks(info->flags, 1);
+				shmem_free_blocks(inode, 1);
+				filepage = NULL;
+				goto failed;
 			}
 
+			spin_lock(&info->lock);
 			entry = shmem_swp_alloc(info, idx, sgp);
 			if (IS_ERR(entry))
 				error = PTR_ERR(entry);
@@ -1488,18 +1467,12 @@ repeat:
 	}
 done:
 	*pagep = filepage;
-	error = 0;
-	goto out;
+	return 0;
 
 failed:
 	if (*pagep != filepage) {
 		unlock_page(filepage);
 		page_cache_release(filepage);
-	}
-out:
-	if (prealloc_page) {
-		mem_cgroup_uncharge_cache_page(prealloc_page);
-		page_cache_release(prealloc_page);
 	}
 	return error;
 }
@@ -2098,14 +2071,14 @@ static int shmem_xattr_security_set(struct dentry *dentry, const char *name,
 					  size, flags);
 }
 
-static const struct xattr_handler shmem_xattr_security_handler = {
+static struct xattr_handler shmem_xattr_security_handler = {
 	.prefix = XATTR_SECURITY_PREFIX,
 	.list   = shmem_xattr_security_list,
 	.get    = shmem_xattr_security_get,
 	.set    = shmem_xattr_security_set,
 };
 
-static const struct xattr_handler *shmem_xattr_handlers[] = {
+static struct xattr_handler *shmem_xattr_handlers[] = {
 	&generic_acl_access_handler,
 	&generic_acl_default_handler,
 	&shmem_xattr_security_handler,
@@ -2187,7 +2160,6 @@ static int shmem_parse_options(char *options, struct shmem_sb_info *sbinfo,
 			       bool remount)
 {
 	char *this_char, *value, *rest;
-	struct mempolicy *mpol = NULL;
 
 	while (options != NULL) {
 		this_char = options;
@@ -2214,7 +2186,7 @@ static int shmem_parse_options(char *options, struct shmem_sb_info *sbinfo,
 			printk(KERN_ERR
 			    "tmpfs: No value for mount option '%s'\n",
 			    this_char);
-			goto error;
+			return 1;
 		}
 
 		if (!strcmp(this_char,"size")) {
@@ -2257,25 +2229,19 @@ static int shmem_parse_options(char *options, struct shmem_sb_info *sbinfo,
 			if (*rest)
 				goto bad_val;
 		} else if (!strcmp(this_char,"mpol")) {
-			mpol_put(mpol);
-			if (mpol_parse_str(value, &mpol, 1)) {
-				mpol = NULL;
+			if (mpol_parse_str(value, &sbinfo->mpol, 1))
 				goto bad_val;
-			}
 		} else {
 			printk(KERN_ERR "tmpfs: Bad mount option %s\n",
 			       this_char);
-			goto error;
+			return 1;
 		}
 	}
-	sbinfo->mpol = mpol;
 	return 0;
 
 bad_val:
 	printk(KERN_ERR "tmpfs: Bad value '%s' for mount option '%s'\n",
 	       value, this_char);
-error:
-	mpol_put(mpol);
 	return 1;
 
 }
@@ -2345,7 +2311,6 @@ static int shmem_show_options(struct seq_file *seq, struct vfsmount *vfs)
 static void shmem_put_super(struct super_block *sb)
 {
 	kfree(sb->s_fs_info);
-
 	sb->s_fs_info = NULL;
 }
 
@@ -2666,7 +2631,8 @@ struct file *shmem_file_setup(const char *name, loff_t size, unsigned long flags
 	int error;
 	struct file *file;
 	struct inode *inode;
-	struct dentry *dentry, *root;
+	struct path path;
+	struct dentry *root;
 	struct qstr this;
 
 	if (IS_ERR(shm_mnt))
@@ -2683,16 +2649,17 @@ struct file *shmem_file_setup(const char *name, loff_t size, unsigned long flags
 	this.len = strlen(name);
 	this.hash = 0; /* will go */
 	root = shm_mnt->mnt_root;
-	dentry = d_alloc(root, &this);
-	if (!dentry)
+	path.dentry = d_alloc(root, &this);
+	if (!path.dentry)
 		goto put_memory;
+	path.mnt = mntget(shm_mnt);
 
 	error = -ENOSPC;
 	inode = shmem_get_inode(root->d_sb, S_IFREG | S_IRWXUGO, 0, flags);
 	if (!inode)
 		goto put_dentry;
 
-	d_instantiate(dentry, inode);
+	d_instantiate(path.dentry, inode);
 	inode->i_size = size;
 	inode->i_nlink = 0;	/* It is unlinked */
 #ifndef CONFIG_MMU
@@ -2702,29 +2669,20 @@ struct file *shmem_file_setup(const char *name, loff_t size, unsigned long flags
 #endif
 
 	error = -ENFILE;
-	file = alloc_file(shm_mnt, dentry, FMODE_WRITE | FMODE_READ,
+	file = alloc_file(&path, FMODE_WRITE | FMODE_READ,
 		  &shmem_file_operations);
 	if (!file)
 		goto put_dentry;
 
-	ima_counts_get(file);
 	return file;
 
 put_dentry:
-	dput(dentry);
+	path_put(&path);
 put_memory:
 	shmem_unacct_size(flags, size);
 	return ERR_PTR(error);
 }
 EXPORT_SYMBOL_GPL(shmem_file_setup);
-
-void shmem_set_file(struct vm_area_struct *vma, struct file *file)
-{
-	if (vma->vm_file)
-		fput(vma->vm_file);
-	vma->vm_file = file;
-	vma->vm_ops = &shmem_vm_ops;
-}
 
 /**
  * shmem_zero_setup - setup a shared anonymous mapping
@@ -2738,6 +2696,10 @@ int shmem_zero_setup(struct vm_area_struct *vma)
 	file = shmem_file_setup("dev/zero", size, vma->vm_flags);
 	if (IS_ERR(file))
 		return PTR_ERR(file);
-	shmem_set_file(vma, file);
+
+	if (vma->vm_file)
+		fput(vma->vm_file);
+	vma->vm_file = file;
+	vma->vm_ops = &shmem_vm_ops;
 	return 0;
 }

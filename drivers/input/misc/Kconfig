@@ -80,6 +80,7 @@ config INPUT_WISTRON_BTNS
 	tristate "x86 Wistron laptop button interface"
 	depends on X86 && !X86_64
 	select INPUT_POLLDEV
+	select INPUT_SPARSEKMAP
 	select NEW_LEDS
 	select LEDS_CLASS
 	select CHECK_SIGNATURE
@@ -131,17 +132,6 @@ config INPUT_ATI_REMOTE2
 
 	  To compile this driver as a module, choose M here: the module will be
 	  called ati_remote2.
-
-config INPUT_KEYCHORD
-	tristate "Key chord input driver support"
-	help
-	  Say Y here if you want to enable the key chord driver
-	  accessible at /dev/keychord.  This driver can be used
-	  for receiving notifications when client specified key
-	  combinations are pressed.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called keychord.
 
 config INPUT_KEYSPAN_REMOTE
 	tristate "Keyspan DMR USB remote control (EXPERIMENTAL)"
@@ -251,11 +241,6 @@ config INPUT_WINBOND_CIR
 	  To compile this driver as a module, choose M here: the module will be
 	  called winbond_cir.
 
-config INPUT_GPIO
-	tristate "GPIO driver support"
-	help
-	  Say Y here if you want to support gpio based keys, wheels etc...
-
 config HP_SDC_RTC
 	tristate "HP SDC Real Time Clock"
 	depends on (GSC || HP300) && SERIO
@@ -297,6 +282,7 @@ config INPUT_RB532_BUTTON
 config INPUT_DM355EVM
 	tristate "TI DaVinci DM355 EVM Keypad and IR Remote"
 	depends on MFD_DM355EVM_MSP
+	select INPUT_SPARSEKMAP
 	help
 	  Supports the pushbuttons and IR remote used with
 	  the DM355 EVM board.
@@ -332,38 +318,5 @@ config INPUT_PCAP
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called pcap_keys.
-
-config INPUT_HALLEFFECT_BU52014HV
-	tristate "BU52014HV Hall Effect Sensor"
-	help
-	  Say Y here if you wish to include support for the BU52014HV hall
-	  effect sensor.
-
-	  If unsure, say N.
-
-config INPUT_PROXIMITY_SFH7743
-	tristate "SFH7743 Proximity"
-	default n
-	help
- 	  Say Y here if you wish to include the OSRAM SFH7743 proximity
-	  driver.
-
-	  If unsure, say N.
-	  To compile this driver a a module, choose M here.
-
-config MOT_KEYBOARD_ADP5588
-	tristate "ADP5588 Keyboard"
-	default n
-	help
-	  ADP5588 Keyboard.
-
-config INPUT_ALS_IR_ISL29030
-	tristate "ISL29030 ALS & IR Sensor"
-	default n
-	help
-	  Say Y here if you wish to include support for the ISL29030 ALS
-	  and IR sensor.
-
-	  If unsure, say N.
 
 endif

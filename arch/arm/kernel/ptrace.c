@@ -17,17 +17,12 @@
 #include <linux/user.h>
 #include <linux/security.h>
 #include <linux/init.h>
-#include <linux/module.h>
-#include <linux/marker.h>
-#include <linux/kallsyms.h>
 #include <linux/signal.h>
 #include <linux/uaccess.h>
-#include <trace/syscall.h>
 
 #include <asm/pgtable.h>
 #include <asm/system.h>
 #include <asm/traps.h>
-#include <asm/unistd.h>
 
 #include "ptrace.h"
 
@@ -56,30 +51,6 @@
 #define BREAKINST_ARM	0xe7f001f0
 #define BREAKINST_THUMB	0xde01
 #endif
-
-DEFINE_TRACE(syscall_entry);
-DEFINE_TRACE(syscall_exit);
-
-extern unsigned long sys_call_table[];
-
-void ltt_dump_sys_call_table(void *call_data)
-{
-	int i;
-	char namebuf[KSYM_NAME_LEN];
-
-	for (i = 0; i < __NR_syscall_max + 1; i++) {
-		sprint_symbol(namebuf, sys_call_table[i]);
-		__trace_mark(0, syscall_state, sys_call_table, call_data,
-			"id %d address %p symbol %s",
-			i, (void*)sys_call_table[i], namebuf);
-	}
-}
-EXPORT_SYMBOL_GPL(ltt_dump_sys_call_table);
-
-void ltt_dump_idt_table(void *call_data)
-{
-}
-EXPORT_SYMBOL_GPL(ltt_dump_idt_table);
 
 /*
  * this routine will get a word off of the processes privileged stack.
@@ -698,7 +669,7 @@ static int ptrace_getvfpregs(struct task_struct *tsk, void __user *data)
 	union vfp_state *vfp = &thread->vfpstate;
 	struct user_vfp __user *ufp = data;
 
-	vfp_sync_hwstate(thread);
+	vfp_sync_state(thread);
 
 	/* copy the floating point registers */
 	if (copy_to_user(&ufp->fpregs, &vfp->hard.fpregs,
@@ -721,7 +692,7 @@ static int ptrace_setvfpregs(struct task_struct *tsk, void __user *data)
 	union vfp_state *vfp = &thread->vfpstate;
 	struct user_vfp __user *ufp = data;
 
-	vfp_sync_hwstate(thread);
+	vfp_sync_state(thread);
 
 	/* copy the floating point registers */
 	if (copy_from_user(&vfp->hard.fpregs, &ufp->fpregs,
@@ -731,8 +702,6 @@ static int ptrace_setvfpregs(struct task_struct *tsk, void __user *data)
 	/* copy the status and control register */
 	if (get_user(vfp->hard.fpscr, &ufp->fpscr))
 		return -EFAULT;
-
-	vfp_flush_hwstate(thread);
 
 	return 0;
 }
@@ -881,11 +850,6 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 asmlinkage int syscall_trace(int why, struct pt_regs *regs, int scno)
 {
 	unsigned long ip;
-
-	if (!why)
-		trace_syscall_entry(regs, scno);
-	else
-		trace_syscall_exit(regs->ARM_r0);
 
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
 		return scno;

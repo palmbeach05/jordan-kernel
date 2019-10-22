@@ -125,7 +125,6 @@ struct request_sock;
 #define LSM_UNSAFE_SHARE	1
 #define LSM_UNSAFE_PTRACE	2
 #define LSM_UNSAFE_PTRACE_CAP	4
-#define LSM_UNSAFE_NO_NEW_PRIVS	8
 
 #ifdef CONFIG_MMU
 /*
@@ -454,6 +453,22 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
  *	@old_dentry contains the dentry structure of the old link.
  *	@new_dir contains the path structure for parent of the new link.
  *	@new_dentry contains the dentry structure of the new link.
+ *	Return 0 if permission is granted.
+ * @path_chmod:
+ *	Check for permission to change DAC's permission of a file or directory.
+ *	@dentry contains the dentry structure.
+ *	@mnt contains the vfsmnt structure.
+ *	@mode contains DAC's mode.
+ *	Return 0 if permission is granted.
+ * @path_chown:
+ *	Check for permission to change owner/group of a file or directory.
+ *	@path contains the path structure.
+ *	@uid contains new owner's ID.
+ *	@gid contains new group's ID.
+ *	Return 0 if permission is granted.
+ * @path_chroot:
+ *	Check for permission to change root directory.
+ *	@path contains the path structure.
  *	Return 0 if permission is granted.
  * @inode_readlink:
  *	Check the permission to read the symbolic link.
@@ -1431,11 +1446,6 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
 struct security_operations {
 	char name[SECURITY_NAME_MAX + 1];
 
-	int (*binder_set_context_mgr) (struct task_struct *mgr);
-	int (*binder_transaction) (struct task_struct *from, struct task_struct *to);
-	int (*binder_transfer_binder) (struct task_struct *from, struct task_struct *to);
-	int (*binder_transfer_file) (struct task_struct *from, struct task_struct *to, struct file *file);
-
 	int (*ptrace_access_check) (struct task_struct *child, unsigned int mode);
 	int (*ptrace_traceme) (struct task_struct *parent);
 	int (*capget) (struct task_struct *target,
@@ -1502,6 +1512,10 @@ struct security_operations {
 			  struct dentry *new_dentry);
 	int (*path_rename) (struct path *old_dir, struct dentry *old_dentry,
 			    struct path *new_dir, struct dentry *new_dentry);
+	int (*path_chmod) (struct dentry *dentry, struct vfsmount *mnt,
+			   mode_t mode);
+	int (*path_chown) (struct path *path, uid_t uid, gid_t gid);
+	int (*path_chroot) (struct path *path);
 #endif
 
 	int (*inode_alloc_security) (struct inode *inode);
@@ -1730,10 +1744,6 @@ extern int security_module_enable(struct security_operations *ops);
 extern int register_security(struct security_operations *ops);
 
 /* Security operations */
-int security_binder_set_context_mgr(struct task_struct *mgr);
-int security_binder_transaction(struct task_struct *from, struct task_struct *to);
-int security_binder_transfer_binder(struct task_struct *from, struct task_struct *to);
-int security_binder_transfer_file(struct task_struct *from, struct task_struct *to, struct file *file);
 int security_ptrace_access_check(struct task_struct *child, unsigned int mode);
 int security_ptrace_traceme(struct task_struct *parent);
 int security_capget(struct task_struct *target,
@@ -1917,26 +1927,6 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
  */
 
 static inline int security_init(void)
-{
-	return 0;
-}
-
-static inline int security_binder_set_context_mgr(struct task_struct *mgr)
-{
-	return 0;
-}
-
-static inline int security_binder_transaction(struct task_struct *from, struct task_struct *to)
-{
-	return 0;
-}
-
-static inline int security_binder_transfer_binder(struct task_struct *from, struct task_struct *to)
-{
-	return 0;
-}
-
-static inline int security_binder_transfer_file(struct task_struct *from, struct task_struct *to, struct file *file)
 {
 	return 0;
 }
@@ -2990,6 +2980,10 @@ int security_path_link(struct dentry *old_dentry, struct path *new_dir,
 		       struct dentry *new_dentry);
 int security_path_rename(struct path *old_dir, struct dentry *old_dentry,
 			 struct path *new_dir, struct dentry *new_dentry);
+int security_path_chmod(struct dentry *dentry, struct vfsmount *mnt,
+			mode_t mode);
+int security_path_chown(struct path *path, uid_t uid, gid_t gid);
+int security_path_chroot(struct path *path);
 #else	/* CONFIG_SECURITY_PATH */
 static inline int security_path_unlink(struct path *dir, struct dentry *dentry)
 {
@@ -3036,6 +3030,23 @@ static inline int security_path_rename(struct path *old_dir,
 				       struct dentry *old_dentry,
 				       struct path *new_dir,
 				       struct dentry *new_dentry)
+{
+	return 0;
+}
+
+static inline int security_path_chmod(struct dentry *dentry,
+				      struct vfsmount *mnt,
+				      mode_t mode)
+{
+	return 0;
+}
+
+static inline int security_path_chown(struct path *path, uid_t uid, gid_t gid)
+{
+	return 0;
+}
+
+static inline int security_path_chroot(struct path *path)
 {
 	return 0;
 }

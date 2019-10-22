@@ -23,9 +23,8 @@
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/resume-trace.h>
-#include <linux/rwsem.h>
 #include <linux/interrupt.h>
-#include <linux/timer.h>
+#include <linux/sched.h>
 
 #include "../base.h"
 #include "power.h"
@@ -43,9 +42,6 @@
 LIST_HEAD(dpm_list);
 
 static DEFINE_MUTEX(dpm_list_mtx);
-
-static void dpm_drv_timeout(unsigned long data);
-static DEFINE_TIMER(dpm_drv_wd, dpm_drv_timeout, 0, 0);
 
 /*
  * Set once the preparation of devices for a PM transition has started, reset
@@ -176,6 +172,13 @@ static int pm_op(struct device *dev,
 		 pm_message_t state)
 {
 	int error = 0;
+	ktime_t calltime, delta, rettime;
+
+	if (initcall_debug) {
+		pr_info("calling  %s+ @ %i\n",
+				dev_name(dev), task_pid_nr(current));
+		calltime = ktime_get();
+	}
 
 	switch (state.event) {
 #ifdef CONFIG_SUSPEND
@@ -223,6 +226,14 @@ static int pm_op(struct device *dev,
 	default:
 		error = -EINVAL;
 	}
+
+	if (initcall_debug) {
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		pr_info("call %s+ returned %d after %Ld usecs\n", dev_name(dev),
+			error, (unsigned long long)ktime_to_ns(delta) >> 10);
+	}
+
 	return error;
 }
 
@@ -240,6 +251,13 @@ static int pm_noirq_op(struct device *dev,
 			pm_message_t state)
 {
 	int error = 0;
+	ktime_t calltime, delta, rettime;
+
+	if (initcall_debug) {
+		pr_info("calling  %s_i+ @ %i\n",
+				dev_name(dev), task_pid_nr(current));
+		calltime = ktime_get();
+	}
 
 	switch (state.event) {
 #ifdef CONFIG_SUSPEND
@@ -287,6 +305,14 @@ static int pm_noirq_op(struct device *dev,
 	default:
 		error = -EINVAL;
 	}
+
+	if (initcall_debug) {
+		rettime = ktime_get();
+		delta = ktime_sub(rettime, calltime);
+		printk("initcall %s_i+ returned %d after %Ld usecs\n", dev_name(dev),
+			error, (unsigned long long)ktime_to_ns(delta) >> 10);
+	}
+
 	return error;
 }
 
@@ -345,14 +371,11 @@ static int device_resume_noirq(struct device *dev, pm_message_t state)
 	TRACE_DEVICE(dev);
 	TRACE_RESUME(0);
 
-	if (!dev->bus)
-		goto End;
-
-	if (dev->bus->pm) {
+	if (dev->bus && dev->bus->pm) {
 		pm_dev_dbg(dev, state, "EARLY ");
 		error = pm_noirq_op(dev, dev->bus->pm, state);
 	}
- End:
+
 	TRACE_RESUME(error);
 	return error;
 }
@@ -433,45 +456,6 @@ static int device_resume(struct device *dev, pm_message_t state)
 
 	TRACE_RESUME(error);
 	return error;
-}
-
-/**
- *	dpm_drv_timeout - Driver suspend / resume watchdog handler
- *	@data: struct device which timed out
- *
- * 	Called when a driver has timed out suspending or resuming.
- * 	There's not much we can do here to recover so
- * 	BUG() out for a crash-dump
- *
- */
-static void dpm_drv_timeout(unsigned long data)
-{
-	struct device *dev = (struct device *) data;
-
-	printk(KERN_EMERG "**** DPM device timeout: %s (%s)\n", dev_name(dev),
-	       (dev->driver ? dev->driver->name : "no driver"));
-	BUG();
-}
-
-/**
- *	dpm_drv_wdset - Sets up driver suspend/resume watchdog timer.
- *	@dev: struct device which we're guarding.
- *
- */
-static void dpm_drv_wdset(struct device *dev)
-{
-	dpm_drv_wd.data = (unsigned long) dev;
-	mod_timer(&dpm_drv_wd, jiffies + (HZ * 10));
-}
-
-/**
- *	dpm_drv_wdclr - clears driver suspend/resume watchdog timer.
- *	@dev: struct device which we're no longer guarding.
- *
- */
-static void dpm_drv_wdclr(struct device *dev)
-{
-	del_timer_sync(&dpm_drv_wd);
 }
 
 /**
@@ -564,7 +548,7 @@ static void dpm_complete(pm_message_t state)
 			mutex_unlock(&dpm_list_mtx);
 
 			device_complete(dev, state);
-			pm_runtime_put_sync(dev);
+			pm_runtime_put_noidle(dev);
 
 			mutex_lock(&dpm_list_mtx);
 		}
@@ -627,10 +611,7 @@ static int device_suspend_noirq(struct device *dev, pm_message_t state)
 {
 	int error = 0;
 
-	if (!dev->bus)
-		return 0;
-
-	if (dev->bus->pm) {
+	if (dev->bus && dev->bus->pm) {
 		pm_dev_dbg(dev, state, "LATE ");
 		error = pm_noirq_op(dev, dev->bus->pm, state);
 	}
@@ -732,9 +713,7 @@ static int dpm_suspend(pm_message_t state)
 		get_device(dev);
 		mutex_unlock(&dpm_list_mtx);
 
-		dpm_drv_wdset(dev);
 		error = device_suspend(dev, state);
-		dpm_drv_wdclr(dev);
 
 		mutex_lock(&dpm_list_mtx);
 		if (error) {
@@ -817,7 +796,7 @@ static int dpm_prepare(pm_message_t state)
 		pm_runtime_get_noresume(dev);
 		if (pm_runtime_barrier(dev) && device_may_wakeup(dev)) {
 			/* Wake-up requested during system sleep transition. */
-			pm_runtime_put_sync(dev);
+			pm_runtime_put_noidle(dev);
 			error = -EBUSY;
 		} else {
 			error = device_prepare(dev, state);

@@ -10,9 +10,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-#ifdef CONFIG_OMAP_DEBUG_POWERDOMAIN
-# define DEBUG
-#endif
+#undef DEBUG
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -160,7 +158,7 @@ static __init void _pwrdm_setup(struct powerdomain *pwrdm)
 {
 	int i;
 
-	for (i = 0; i < 4; i++)
+	for (i = 0; i < PWRDM_MAX_PWRSTS; i++)
 		pwrdm->state_counter[i] = 0;
 
 	pwrdm_wait_transition(pwrdm);
@@ -312,10 +310,13 @@ int pwrdm_for_each_nolock(int (*fn)(struct powerdomain *pwrdm, void *user),
 int pwrdm_for_each(int (*fn)(struct powerdomain *pwrdm, void *user),
 			void *user)
 {
+	unsigned long flags;
 	int ret;
-	read_lock(&pwrdm_rwlock);
+
+	read_lock_irqsave(&pwrdm_rwlock, flags);
 	ret = pwrdm_for_each_nolock(fn, user);
-	read_unlock(&pwrdm_rwlock);
+	read_unlock_irqrestore(&pwrdm_rwlock, flags);
+
 	return ret;
 }
 
@@ -436,18 +437,20 @@ int pwrdm_for_each_clkdm(struct powerdomain *pwrdm,
 			 int (*fn)(struct powerdomain *pwrdm,
 				   struct clockdomain *clkdm))
 {
+	unsigned long flags;
 	int ret = 0;
 	int i;
 
 	if (!fn)
 		return -EINVAL;
 
-	read_lock(&pwrdm_rwlock);
+	read_lock_irqsave(&pwrdm_rwlock, flags);
 
 	for (i = 0; i < PWRDM_MAX_CLKDMS && !ret; i++)
 		ret = (*fn)(pwrdm, pwrdm->pwrdm_clkdms[i]);
 
-	read_unlock(&pwrdm_rwlock);
+	read_unlock_irqrestore(&pwrdm_rwlock, flags);
+
 	return ret;
 }
 
@@ -475,7 +478,7 @@ int pwrdm_add_wkdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 	if (IS_ERR(p)) {
 		pr_debug("powerdomain: hardware cannot set/clear wake up of "
 			 "%s when %s wakes up\n", pwrdm1->name, pwrdm2->name);
-		return IS_ERR(p);
+		return PTR_ERR(p);
 	}
 
 	pr_debug("powerdomain: hardware will wake up %s when %s wakes up\n",
@@ -508,7 +511,7 @@ int pwrdm_del_wkdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 	if (IS_ERR(p)) {
 		pr_debug("powerdomain: hardware cannot set/clear wake up of "
 			 "%s when %s wakes up\n", pwrdm1->name, pwrdm2->name);
-		return IS_ERR(p);
+		return PTR_ERR(p);
 	}
 
 	pr_debug("powerdomain: hardware will no longer wake up %s after %s "
@@ -545,7 +548,7 @@ int pwrdm_read_wkdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 	if (IS_ERR(p)) {
 		pr_debug("powerdomain: hardware cannot set/clear wake up of "
 			 "%s when %s wakes up\n", pwrdm1->name, pwrdm2->name);
-		return IS_ERR(p);
+		return PTR_ERR(p);
 	}
 
 	return prm_read_mod_bits_shift(pwrdm1->prcm_offs, PM_WKDEP,
@@ -568,10 +571,10 @@ int pwrdm_add_sleepdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 {
 	struct powerdomain *p;
 
-	if (!pwrdm1)
+	if (!cpu_is_omap34xx())
 		return -EINVAL;
 
-	if (!cpu_is_omap34xx())
+	if (!pwrdm1)
 		return -EINVAL;
 
 	p = _pwrdm_deps_lookup(pwrdm2, pwrdm1->sleepdep_srcs);
@@ -579,7 +582,7 @@ int pwrdm_add_sleepdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 		pr_debug("powerdomain: hardware cannot set/clear sleep "
 			 "dependency affecting %s from %s\n", pwrdm1->name,
 			 pwrdm2->name);
-		return IS_ERR(p);
+		return PTR_ERR(p);
 	}
 
 	pr_debug("powerdomain: will prevent %s from sleeping if %s is active\n",
@@ -607,10 +610,10 @@ int pwrdm_del_sleepdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 {
 	struct powerdomain *p;
 
-	if (!pwrdm1)
+	if (!cpu_is_omap34xx())
 		return -EINVAL;
 
-	if (!cpu_is_omap34xx())
+	if (!pwrdm1)
 		return -EINVAL;
 
 	p = _pwrdm_deps_lookup(pwrdm2, pwrdm1->sleepdep_srcs);
@@ -618,7 +621,7 @@ int pwrdm_del_sleepdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 		pr_debug("powerdomain: hardware cannot set/clear sleep "
 			 "dependency affecting %s from %s\n", pwrdm1->name,
 			 pwrdm2->name);
-		return IS_ERR(p);
+		return PTR_ERR(p);
 	}
 
 	pr_debug("powerdomain: will no longer prevent %s from sleeping if "
@@ -650,10 +653,10 @@ int pwrdm_read_sleepdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 {
 	struct powerdomain *p;
 
-	if (!pwrdm1)
+	if (!cpu_is_omap34xx())
 		return -EINVAL;
 
-	if (!cpu_is_omap34xx())
+	if (!pwrdm1)
 		return -EINVAL;
 
 	p = _pwrdm_deps_lookup(pwrdm2, pwrdm1->sleepdep_srcs);
@@ -661,7 +664,7 @@ int pwrdm_read_sleepdep(struct powerdomain *pwrdm1, struct powerdomain *pwrdm2)
 		pr_debug("powerdomain: hardware cannot set/clear sleep "
 			 "dependency affecting %s from %s\n", pwrdm1->name,
 			 pwrdm2->name);
-		return IS_ERR(p);
+		return PTR_ERR(p);
 	}
 
 	return prm_read_mod_bits_shift(pwrdm1->prcm_offs, OMAP3430_CM_SLEEPDEP,
@@ -1080,10 +1083,10 @@ int pwrdm_clear_all_prev_pwrst(struct powerdomain *pwrdm)
 	 * warn & fail if it is not ON.
 	 */
 
-	pr_debug("powerdomain: clearing previous power state to ON for %s\n",
+	pr_debug("powerdomain: clearing previous power state reg for %s\n",
 		 pwrdm->name);
 
-	prm_write_mod_reg(0xFF, pwrdm->prcm_offs, OMAP3430_PM_PREPWSTST);
+	prm_write_mod_reg(0, pwrdm->prcm_offs, OMAP3430_PM_PREPWSTST);
 
 	return 0;
 }
@@ -1195,29 +1198,6 @@ int pwrdm_wait_transition(struct powerdomain *pwrdm)
 
 	return 0;
 }
-
-/**
- * pwrdm_can_idle - check if the powerdomain can enter idle
- * @pwrdm: struct powerdomain * the powerdomain to check status of
- *
- * Does a functional clock check for the powerdomain and returns 1 if the
- * powerdomain can enter idle, 0 if not.
- */
-int pwrdm_can_idle(struct powerdomain *pwrdm)
-{
-	int i;
-	const int fclk_regs[] = { CM_FCLKEN, OMAP3430ES2_CM_FCLKEN3 };
-
-	if (!pwrdm)
-		return -EINVAL;
-
-	for (i = 0; i < pwrdm->fclk_reg_amt; i++)
-		if (cm_read_mod_reg(pwrdm->prcm_offs, fclk_regs[i]) &
-				(0xffffffff ^ pwrdm->fclk_masks[i]))
-			return 0;
-	return 1;
-}
-
 
 int pwrdm_state_switch(struct powerdomain *pwrdm)
 {

@@ -49,7 +49,6 @@
 #include "hidp.h"
 
 #define VERSION "1.2"
-#define HIDP_DATC_ACCUM_MAX_LEN 2000
 
 static DECLARE_RWSEM(hidp_session_sem);
 static LIST_HEAD(hidp_session_list);
@@ -244,39 +243,6 @@ static void hidp_input_report(struct hidp_session *session, struct sk_buff *skb)
 	input_sync(dev);
 }
 
-static int __hidp_send_ctrl_message(struct hidp_session *session,
-			unsigned char hdr, unsigned char *data, int size)
-{
-	struct sk_buff *skb;
-
-	BT_DBG("session %p data %p size %d", session, data, size);
-
-	if (!(skb = alloc_skb(size + 1, GFP_ATOMIC))) {
-		BT_ERR("Can't allocate memory for new frame");
-		return -ENOMEM;
-	}
-
-	*skb_put(skb, 1) = hdr;
-	if (data && size > 0)
-		memcpy(skb_put(skb, size), data, size);
-
-	skb_queue_tail(&session->ctrl_transmit, skb);
-
-	return 0;
-}
-
-static inline int hidp_send_ctrl_message(struct hidp_session *session,
-			unsigned char hdr, unsigned char *data, int size)
-{
-	int err;
-
-	err = __hidp_send_ctrl_message(session, hdr, data, size);
-
-	hidp_schedule(session);
-
-	return err;
-}
-
 static int hidp_queue_report(struct hidp_session *session,
 				unsigned char *data, int size)
 {
@@ -314,22 +280,9 @@ static int hidp_send_report(struct hidp_session *session, struct hid_report *rep
 	return hidp_queue_report(session, buf, rsize);
 }
 
-static int hidp_output_raw_report(struct hid_device *hid, unsigned char *data, size_t count,
-		unsigned char report_type)
+static int hidp_output_raw_report(struct hid_device *hid, unsigned char *data, size_t count)
 {
-	switch (report_type) {
-	case HID_FEATURE_REPORT:
-		report_type = HIDP_TRANS_SET_REPORT | HIDP_DATA_RTYPE_FEATURE;
-		break;
-	case HID_OUTPUT_REPORT:
-		report_type = HIDP_TRANS_DATA | HIDP_DATA_RTYPE_OUPUT;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (hidp_send_ctrl_message(hid->driver_data, report_type,
-			data, count))
+	if (hidp_queue_report(hid->driver_data, data, count))
 		return -ENOMEM;
 	return count;
 }
@@ -352,6 +305,39 @@ static inline void hidp_del_timer(struct hidp_session *session)
 {
 	if (session->idle_to > 0)
 		del_timer(&session->timer);
+}
+
+static int __hidp_send_ctrl_message(struct hidp_session *session,
+			unsigned char hdr, unsigned char *data, int size)
+{
+	struct sk_buff *skb;
+
+	BT_DBG("session %p data %p size %d", session, data, size);
+
+	if (!(skb = alloc_skb(size + 1, GFP_ATOMIC))) {
+		BT_ERR("Can't allocate memory for new frame");
+		return -ENOMEM;
+	}
+
+	*skb_put(skb, 1) = hdr;
+	if (data && size > 0)
+		memcpy(skb_put(skb, size), data, size);
+
+	skb_queue_tail(&session->ctrl_transmit, skb);
+
+	return 0;
+}
+
+static inline int hidp_send_ctrl_message(struct hidp_session *session,
+			unsigned char hdr, unsigned char *data, int size)
+{
+	int err;
+
+	err = __hidp_send_ctrl_message(session, hdr, data, size);
+
+	hidp_schedule(session);
+
+	return err;
 }
 
 static void hidp_process_handshake(struct hidp_session *session,
@@ -397,8 +383,6 @@ static void hidp_process_hid_control(struct hidp_session *session,
 		/* Flush the transmit queues */
 		skb_queue_purge(&session->ctrl_transmit);
 		skb_queue_purge(&session->intr_transmit);
-		session->intr_sock->sk->sk_err = EUNATCH;
-		session->ctrl_sock->sk->sk_err = EUNATCH;
 
 		/* Kill session thread */
 		atomic_inc(&session->terminate);
@@ -478,67 +462,16 @@ static void hidp_recv_intr_frame(struct hidp_session *session,
 
 	hdr = skb->data[0];
 	skb_pull(skb, 1);
+
 	if (hdr == (HIDP_TRANS_DATA | HIDP_DATA_RTYPE_INPUT)) {
-		if (session->datc_accum_len > 0) {
-			BT_DBG("DATA: expected DATC, discarding %zu bytes",
-				session->datc_accum_len);
-			session->datc_accum_len = 0;
-		}
-		if ((skb->len + 1) == L2CAP_DEFAULT_MTU) {
-			/* Start Accumulating data */
-			memcpy(session->datc_accum_buf, skb->data, skb->len);
-			session->datc_accum_len = skb->len;
-			BT_DBG("DATA: accumulating: %d", skb->len);
-			kfree_skb(skb);
-			return;
-		}
 		hidp_set_timer(session);
 
 		if (session->input)
 			hidp_input_report(session, skb);
 
 		if (session->hid) {
-			hid_input_report(session->hid, HID_INPUT_REPORT,
-				skb->data, skb->len, 1);
+			hid_input_report(session->hid, HID_INPUT_REPORT, skb->data, skb->len, 1);
 			BT_DBG("report len %d", skb->len);
-		}
-	} else if (hdr == (HIDP_TRANS_DATC | HIDP_DATA_RTYPE_INPUT)) {
-		if (session->datc_accum_len > 0) {
-			/* Accumulate DATC into buffer */
-			if (session->datc_accum_len + skb->len <=
-					HIDP_DATC_ACCUM_MAX_LEN) {
-				memcpy(session->datc_accum_buf +
-					session->datc_accum_len,
-					skb->data, skb->len);
-				session->datc_accum_len += skb->len;
-				BT_DBG("DATC: accumulating:%d total:%zu",
-					skb->len,
-					session->datc_accum_len);
-			} else {
-				BT_DBG("DATC: buffer overflow reqd:%zu size:%d",
-					session->datc_accum_len + skb->len,
-					HIDP_DATC_ACCUM_MAX_LEN);
-				session->datc_accum_len = 0;
-			}
-
-			if (session->datc_accum_len > 0 &&
-				(skb->len + 1) < L2CAP_DEFAULT_MTU) {
-				/* Packet ends here, process it. */
-				hidp_set_timer(session);
-				if (session->hid) {
-					hid_input_report(session->hid,
-						HID_INPUT_REPORT,
-						session->datc_accum_buf,
-						session->datc_accum_len,
-						1);
-					BT_DBG("report len %zu",
-						session->datc_accum_len);
-				}
-				session->datc_accum_len = 0;
-			}
-		} else {
-			BT_DBG("DATC: unexpected, discarding %d bytes",
-				skb->len);
 		}
 	} else {
 		BT_DBG("Unsupported protocol header 0x%02x", hdr);
@@ -672,7 +605,6 @@ static int hidp_session(void *arg)
 
 	up_write(&hidp_session_sem);
 
-	kfree(session->datc_accum_buf);
 	kfree(session);
 	return 0;
 }
@@ -931,12 +863,6 @@ int hidp_add_connection(struct hidp_connadd_req *req, struct socket *ctrl_sock, 
 			goto purge;
 	}
 
-	session->datc_accum_buf = kmalloc(HIDP_DATC_ACCUM_MAX_LEN, GFP_KERNEL);
-	if (!session->datc_accum_buf) {
-		err = -ENOMEM;
-		goto purge;
-	}
-
 	__hidp_link_session(session);
 
 	hidp_set_timer(session);
@@ -961,8 +887,6 @@ unlink:
 	hidp_del_timer(session);
 
 	__hidp_unlink_session(session);
-
-	kfree(session->datc_accum_buf);
 
 	if (session->input) {
 		input_unregister_device(session->input);

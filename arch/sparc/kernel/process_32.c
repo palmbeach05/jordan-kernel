@@ -24,7 +24,6 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/init.h>
-#include <trace/sched.h>
 
 #include <asm/auxio.h>
 #include <asm/oplib.h>
@@ -39,8 +38,6 @@
 #include <asm/elf.h>
 #include <asm/prom.h>
 #include <asm/unistd.h>
-
-DEFINE_TRACE(sched_kthread_create);
 
 /* 
  * Power management idle function 
@@ -675,7 +672,6 @@ pid_t kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 			     "i" (__NR_clone), "r" (flags | CLONE_VM | CLONE_UNTRACED),
 			     "i" (__NR_exit),  "r" (fn), "r" (arg) :
 			     "g1", "g2", "g3", "o0", "o1", "memory", "cc");
-	trace_sched_kthread_create(fn, retval);
 	return retval;
 }
 EXPORT_SYMBOL(kernel_thread);

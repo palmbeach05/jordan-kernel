@@ -90,6 +90,7 @@
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/ctype.h>
+#include <linux/mm_inline.h>
 
 #include <asm/tlbflush.h>
 #include <asm/uaccess.h>
@@ -804,6 +805,8 @@ static void migrate_page_add(struct page *page, struct list_head *pagelist,
 	if ((flags & MPOL_MF_MOVE_ALL) || page_mapcount(page) == 1) {
 		if (!isolate_lru_page(page)) {
 			list_add_tail(&page->lru, pagelist);
+			inc_zone_page_state(page, NR_ISOLATED_ANON +
+					    page_is_file_cache(page));
 		}
 	}
 }
@@ -1560,51 +1563,54 @@ struct zonelist *huge_zonelist(struct vm_area_struct *vma, unsigned long addr,
 	}
 	return zl;
 }
-#endif
 
 /*
- * mempolicy_nodemask_intersects
+ * init_nodemask_of_mempolicy
  *
- * If tsk's mempolicy is "default" [NULL], return 'true' to indicate default
- * policy.  Otherwise, check for intersection between mask and the policy
- * nodemask for 'bind' or 'interleave' policy.  For 'perferred' or 'local'
- * policy, always return true since it may allocate elsewhere on fallback.
+ * If the current task's mempolicy is "default" [NULL], return 'false'
+ * to indicate default policy.  Otherwise, extract the policy nodemask
+ * for 'bind' or 'interleave' policy into the argument nodemask, or
+ * initialize the argument nodemask to contain the single node for
+ * 'preferred' or 'local' policy and return 'true' to indicate presence
+ * of non-default mempolicy.
  *
- * Takes task_lock(tsk) to prevent freeing of its mempolicy.
+ * We don't bother with reference counting the mempolicy [mpol_get/put]
+ * because the current task is examining it's own mempolicy and a task's
+ * mempolicy is only ever changed by the task itself.
+ *
+ * N.B., it is the caller's responsibility to free a returned nodemask.
  */
-bool mempolicy_nodemask_intersects(struct task_struct *tsk,
-					const nodemask_t *mask)
+bool init_nodemask_of_mempolicy(nodemask_t *mask)
 {
 	struct mempolicy *mempolicy;
-	bool ret = true;
+	int nid;
 
-	if (!mask)
-		return ret;
-	task_lock(tsk);
-	mempolicy = tsk->mempolicy;
-	if (!mempolicy)
-		goto out;
+	if (!(mask && current->mempolicy))
+		return false;
 
+	mempolicy = current->mempolicy;
 	switch (mempolicy->mode) {
 	case MPOL_PREFERRED:
-		/*
-		 * MPOL_PREFERRED and MPOL_F_LOCAL are only preferred nodes to
-		 * allocate from, they may fallback to other nodes when oom.
-		 * Thus, it's possible for tsk to have allocated memory from
-		 * nodes in mask.
-		 */
+		if (mempolicy->flags & MPOL_F_LOCAL)
+			nid = numa_node_id();
+		else
+			nid = mempolicy->v.preferred_node;
+		init_nodemask_of_node(mask, nid);
 		break;
+
 	case MPOL_BIND:
+		/* Fall through */
 	case MPOL_INTERLEAVE:
-		ret = nodes_intersects(mempolicy->v.nodes, *mask);
+		*mask =  mempolicy->v.nodes;
 		break;
+
 	default:
 		BUG();
 	}
-out:
-	task_unlock(tsk);
-	return ret;
+
+	return true;
 }
+#endif
 
 /* Allocate a page in interleaved policy.
    Own path because it needs to do special accounting. */

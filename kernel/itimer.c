@@ -13,12 +13,8 @@
 #include <linux/posix-timers.h>
 #include <linux/hrtimer.h>
 #include <trace/events/timer.h>
-#include <trace/timer.h>
 
 #include <asm/uaccess.h>
-
-DEFINE_TRACE(timer_itimer_expired);
-DEFINE_TRACE(timer_itimer_set);
 
 /**
  * itimer_get_remtime - get remaining time for the timer
@@ -128,7 +124,6 @@ enum hrtimer_restart it_real_fn(struct hrtimer *timer)
 		container_of(timer, struct signal_struct, real_timer);
 
 	trace_itimer_expire(ITIMER_REAL, sig->leader_pid, 0);
-	trace_timer_itimer_expired(sig);
 	kill_pid_info(SIGALRM, SEND_SIG_PRIV, sig->leader_pid);
 
 	return HRTIMER_NORESTART;
@@ -151,6 +146,7 @@ static void set_cpu_itimer(struct task_struct *tsk, unsigned int clock_id,
 {
 	cputime_t cval, nval, cinterval, ninterval;
 	s64 ns_ninterval, ns_nval;
+	u32 error, incr_error;
 	struct cpu_itimer *it = &tsk->signal->it[clock_id];
 
 	nval = timeval_to_cputime(&value->it_value);
@@ -158,8 +154,8 @@ static void set_cpu_itimer(struct task_struct *tsk, unsigned int clock_id,
 	ninterval = timeval_to_cputime(&value->it_interval);
 	ns_ninterval = timeval_to_ns(&value->it_interval);
 
-	it->incr_error = cputime_sub_ns(ninterval, ns_ninterval);
-	it->error = cputime_sub_ns(nval, ns_nval);
+	error = cputime_sub_ns(nval, ns_nval);
+	incr_error = cputime_sub_ns(ninterval, ns_ninterval);
 
 	spin_lock_irq(&tsk->sighand->siglock);
 
@@ -173,6 +169,8 @@ static void set_cpu_itimer(struct task_struct *tsk, unsigned int clock_id,
 	}
 	it->expires = nval;
 	it->incr = ninterval;
+	it->error = error;
+	it->incr_error = incr_error;
 	trace_itimer_state(clock_id == CPUCLOCK_VIRT ?
 			   ITIMER_VIRTUAL : ITIMER_PROF, value, nval);
 
@@ -202,8 +200,6 @@ int do_setitimer(int which, struct itimerval *value, struct itimerval *ovalue)
 	if (!timeval_valid(&value->it_value) ||
 	    !timeval_valid(&value->it_interval))
 		return -EINVAL;
-
-	trace_timer_itimer_set(which, value);
 
 	switch (which) {
 	case ITIMER_REAL:

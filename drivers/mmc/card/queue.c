@@ -17,7 +17,6 @@
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
-#include <linux/mmc/mmc.h>
 #include "queue.h"
 
 #define MMC_QUEUE_BOUNCESZ	65536
@@ -91,10 +90,9 @@ static void mmc_request(struct request_queue *q)
 	struct request *req;
 
 	if (!mq) {
-		while ((req = blk_fetch_request(q)) != NULL) {
-			req->cmd_flags |= REQ_QUIET;
+		printk(KERN_ERR "MMC: killing requests for dead queue\n");
+		while ((req = blk_fetch_request(q)) != NULL)
 			__blk_end_request_all(req, -EIO);
-		}
 		return;
 	}
 
@@ -130,22 +128,6 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card, spinlock_t *lock
 	blk_queue_prep_rq(mq->queue, mmc_prep_request);
 	blk_queue_ordered(mq->queue, QUEUE_ORDERED_DRAIN, NULL);
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, mq->queue);
-
-	/* Set max discard size, << 11 converts to megabytes in sectors */
-	blk_queue_max_discard_sectors(mq->queue, 16 << 11);
-
-	if (card->csd.cmdclass & CCC_ERASE)
-		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD,
-					mq->queue);
-
-	/*
-	 * Calculating a correct span is way to messy if this
-	 * assumption is broken, so remove the erase support
-	 */
-	if (unlikely(mmc_card_blockaddr(card) &&
-			(card->csd.erase_size % 512)))
-		queue_flag_clear_unlocked(QUEUE_FLAG_DISCARD,
-					  mq->queue);
 
 #ifdef CONFIG_MMC_BLOCK_BOUNCE
 	if (host->max_hw_segs == 1) {
@@ -241,17 +223,16 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	struct request_queue *q = mq->queue;
 	unsigned long flags;
 
+	/* Mark that we should start throwing out stragglers */
+	spin_lock_irqsave(q->queue_lock, flags);
+	q->queuedata = NULL;
+	spin_unlock_irqrestore(q->queue_lock, flags);
+
 	/* Make sure the queue isn't suspended, as that will deadlock */
 	mmc_queue_resume(mq);
 
 	/* Then terminate our worker thread */
 	kthread_stop(mq->thread);
-
-	/* Empty the queue */
-	spin_lock_irqsave(q->queue_lock, flags);
-	q->queuedata = NULL;
-	blk_start_queue(q);
-	spin_unlock_irqrestore(q->queue_lock, flags);
 
  	if (mq->bounce_sg)
  		kfree(mq->bounce_sg);
@@ -263,6 +244,8 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	if (mq->bounce_buf)
 		kfree(mq->bounce_buf);
 	mq->bounce_buf = NULL;
+
+	blk_cleanup_queue(mq->queue);
 
 	mq->card = NULL;
 }

@@ -21,6 +21,7 @@
 #include <linux/tty.h>
 #include <linux/platform_device.h>
 #include <linux/serial_core.h>
+#include <linux/bootmem.h>
 #include <linux/interrupt.h>
 #include <linux/bitops.h>
 #include <linux/time.h>
@@ -116,7 +117,7 @@ int gpio_to_irq(int gpio)
 }
 EXPORT_SYMBOL(gpio_to_irq);
 
-int irq_to_gpio(int irq)
+int irq_to_gpio(unsigned int irq)
 {
 	int gpio = (irq < 32) ? irq2gpio[irq] : -EINVAL;
 

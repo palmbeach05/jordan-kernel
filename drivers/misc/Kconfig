@@ -13,9 +13,19 @@ menuconfig MISC_DEVICES
 
 if MISC_DEVICES
 
-config ANDROID_PMEM
-	bool "Android pmem allocator"
-	default y
+config AD525X_DPOT
+	tristate "Analog Devices AD525x Digital Potentiometers"
+	depends on I2C && SYSFS
+	help
+	  If you say yes here, you get support for the Analog Devices
+	  AD5258, AD5259, AD5251, AD5252, AD5253, AD5254 and AD5255
+	  digital potentiometer chips.
+
+	  See Documentation/misc-devices/ad525x_dpot.txt for the
+	  userspace interface.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called ad525x_dpot.
 
 config ATMEL_PWM
 	tristate "Atmel AT32/AT91 PWM support"
@@ -154,29 +164,6 @@ config ATMEL_SSC
 
 	  If unsure, say N.
 
-config MODEM_CONTROL
-   bool "device driver to interface with a modem co-processor"
-   default y
-   ---help---
-         This option enables the device driver to control and
-         interface with a modem co-processor.  This module is needed to
-         monitor for modem panics, interact with the modem during master
-         clear, and allow modem power down/up support.
-
-config OMAP_STI
-	bool "Serial Trace Interface support"
-	depends on ARCH_OMAP16XX || ARCH_OMAP24XX || ARCH_OMAP34XX
-	default n
-	help
-	  Serial Trace Interface. The protocols suported for OMAP1/2/3 are
-	  STI/CSTI/XTIv2 correspondingly.
-
-config OMAP_STI_CONSOLE
-	bool "STI console support"
-	depends on OMAP_STI
-	help
-	  This enables a console driver by way of STI/XTI.
-
 config ENCLOSURE_SERVICES
 	tristate "Enclosure Services"
 	default n
@@ -185,13 +172,6 @@ config ENCLOSURE_SERVICES
 	  contain storage devices).  You also need either a host
 	  driver (SCSI/ATA) which supports enclosures
 	  or a SCSI enclosure device (SES) to use these services.
-
-config KERNEL_DEBUGGER_CORE
-	bool "Kernel Debugger Core"
-	default n
-	---help---
-	  Generic kernel debugging command processor used by low level
-	  (interrupt context) platform-specific debuggers.
 
 config SGI_XP
 	tristate "Support communication between SGI SSIs"
@@ -206,6 +186,31 @@ config SGI_XP
 	  hardware based memory protection from the others.  Enabling
 	  this feature will allow for direct communication between SSIs
 	  based on a network adapter and DMA messaging.
+
+config CS5535_MFGPT
+	tristate "CS5535/CS5536 Geode Multi-Function General Purpose Timer (MFGPT) support"
+	depends on PCI
+	depends on X86
+	default n
+	help
+	  This driver provides access to MFGPT functionality for other
+	  drivers that need timers.  MFGPTs are available in the CS5535 and
+	  CS5536 companion chips that are found in AMD Geode and several
+	  other platforms.  They have a better resolution and max interval
+	  than the generic PIT, and are suitable for use as high-res timers.
+	  You probably don't want to enable this manually; other drivers that
+	  make use of it should enable it.
+
+config CS5535_MFGPT_DEFAULT_IRQ
+	int
+	depends on CS5535_MFGPT
+	default 7
+	help
+	  MFGPTs on the CS5535 require an interrupt.  The selected IRQ
+	  can be overridden as a module option as well as by driver that
+	  use the cs5535_mfgpt_ API; however, different architectures might
+	  want to use a different IRQ by default.  This is here for
+	  architectures to set as necessary.
 
 config HP_ILO
 	tristate "Channel interface driver for HP iLO/iLO2 processor"
@@ -244,19 +249,6 @@ config SGI_GRU_DEBUG
 	This option enables addition debugging code for the SGI GRU driver. If
 	you are unsure, say N.
 
-config DELL_LAPTOP
-	tristate "Dell Laptop Extras (EXPERIMENTAL)"
-	depends on X86
-	depends on DCDBAS
-	depends on EXPERIMENTAL
-	depends on BACKLIGHT_CLASS_DEVICE
-	depends on RFKILL
-	depends on POWER_SUPPLY
-	default n
-	---help---
-	This driver adds support for rfkill and backlight control to Dell
-	laptops.
-
 config ISL29003
 	tristate "Intersil ISL29003 ambient light sensor"
 	depends on I2C && SYSFS
@@ -266,62 +258,6 @@ config ISL29003
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called isl29003.
-
-config VIB_GPIO
-	bool "GPIO Vibrator"
-	default n
-
-config SENSORS_AKM8973
-	tristate "AKM8973 Magnetometer"
-	default n
-	depends on I2C
-	help
-	 Support for the AKM8973 tri-axis magnetometer
-
-config SENSORS_AKM8973_AKMD
-	tristate "AKM8973 Magnetometer"
-	default n
-	depends on I2C
-	help
-	 Support for the AKM8973 tri-axis magnetometer (compass)
-
-config SENSORS_AKM8975
-	tristate "AKM8975 Magnetometer"
-	default n
-	depends on I2C
-	help
-	 Support for the AKM8975 tri-axis magnetometer
-
-config SENSORS_LIS331DLH
-	tristate "LIS331DLH Accelerometer"
-	default n
-	depends on I2C
-	help
-	 Say yes here if you wish to include the STI Micro
-	 LIS331DLH accelerometer driver.
-
-config SENSORS_KXTF9
-	tristate "KXTF9 Accelerometer"
-	default n
-	depends on I2C
-	help
-	 Say yes here if you wish to include the Kionix
-	 KXTF9 accelerometer driver.
-
-config SENSORS_AIRC
-       tristate "Motorola AIRC"
-       default n
-       depends on I2C
-       help
-        Support for the AIRC driver
-
-config WL127X_RFKILL
-	tristate "Bluetooth power control driver for TI wl127x"
-	depends on RFKILL
-	default n
-	---help---
-	 Creates an rfkill entry in sysfs for power control of Bluetooth
-	 TI wl127x chips.
 
 config EP93XX_PWM
 	tristate "EP93xx PWM support"
@@ -336,108 +272,29 @@ config EP93XX_PWM
 	  To compile this driver as a module, choose M here: the module will
 	  be called ep93xx_pwm.
 
-config UID_STAT
-	bool "UID based statistics tracking exported to /proc/uid_stat"
-	default n
+config DS1682
+	tristate "Dallas DS1682 Total Elapsed Time Recorder with Alarm"
+	depends on I2C && EXPERIMENTAL
+	help
+	  If you say yes here you get support for Dallas Semiconductor
+	  DS1682 Total Elapsed Time Recorder.
 
-config WL127X_RFKILL
-	tristate "Bluetooth power control driver for TI wl127x"
-	depends on RFKILL
-	default n
-	---help---
-	 Creates an rfkill entry in sysfs for power control of Bluetooth
-	 TI wl127x chips.
+	  This driver can also be built as a module.  If so, the module
+	  will be called ds1682.
 
-config APANIC
-	bool "Android kernel panic diagnostics driver"
-	default n
-	---help---
-	 Driver which handles kernel panics and attempts to write
-	 critical debugging data to flash.
+config TI_DAC7512
+	tristate "Texas Instruments DAC7512"
+	depends on SPI && SYSFS
+	help
+	  If you say yes here you get support for the Texas Instruments
+	  DAC7512 16-bit digital-to-analog converter.
 
-config APANIC_MMC
-	bool "Android kernel panic diagnostics driver on mmc"
-	default n
-	---help---
-	 Driver which handles kernel panics and attempts to write
-	 critical debugging data through mmc.
-
-config APANIC_MMC_MEMDUMP
-	bool "Android memory dump driver on mmc"
-	depends on APANIC_MMC
-	default n
-	---help---
-	 Driver which handles kernel panics and attempts to write
-	 full memeory dump through mmc.
-
-config APANIC_PLABEL
-	string "Android panic dump flash partition label"
-	depends on APANIC
-	default "kpanic"
-	---help---
-	 If your platform uses a different flash partition label for storing
- 	 crashdumps, enter it here.
-
-config VIB_OMAP_PWM
-	bool "OMAP PWM Vibrator"
-	default n
-
-config VIB_PWM
-        bool "PWM Vibrator"
-        default n
-
-config VIB_PWM_SWEEP
-	bool "PWM Vibrator Sweep signal"
-	depends on VIB_PWM
-	default n
-
-config WL127X_TEST
-	tristate "TI wl127x Bluetooth GPIO test driver for board-sholes"
-	depends on (MACH_SHOLES || MACH_MAPPHONE) && WL127X_RFKILL && BT
-	default n
-	---help---
-	 Creates sysfs GPIO entries for testing TI wl127x BT on board-sholes.
-
-config SYSPANIC
-	tristate "SYSPANIC driver used to detect BP panics"
-	default n
-
-config TCMD_DRIVER
-	bool "Motorola tcmd driver"
-	default n
-
-config OMAP_DEV_TYPE_DRV
-        bool "Motorola OMAP Device Type Driver"
-        default n
+	  This driver can also be built as a module. If so, the module
+	  will be calles ti_dac7512.
 
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
-source "drivers/misc/ts27010mux/Kconfig"
-source "drivers/misc/modem_pm_driver/Kconfig"
-source "drivers/misc/smc/Kconfig"
-source "drivers/misc/sec/Kconfig"
-source "drivers/misc/netmux/Kconfig"
-source "drivers/misc/netmux_linkdriver/Kconfig"
-source "drivers/misc/camera_misc/Kconfig"
-source "drivers/misc/ti-st/Kconfig"
-
-config FSYNC_CONTROL
-	bool "Support for FSync Control"
-	default y
-	help
-	  Say Y here to enable FSync Control
-
-config WRITEBACK_CONTROL
-	bool "Support for dynamic writeback support"
-	default y
-	help
-	  Say Y here to enable dynamic Writeback
-
-config DISPLAY_CONTROL
-	bool "Enables support for display control"
-	default y
-	help
-	  Say Y here to enable display control
+source "drivers/misc/iwmc3200top/Kconfig"
 
 endif # MISC_DEVICES

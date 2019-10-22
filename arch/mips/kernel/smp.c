@@ -32,6 +32,7 @@
 #include <linux/cpumask.h>
 #include <linux/cpu.h>
 #include <linux/err.h>
+#include <linux/ftrace.h>
 
 #include <asm/atomic.h>
 #include <asm/cpu.h>
@@ -130,7 +131,7 @@ asmlinkage __cpuinit void start_secondary(void)
 /*
  * Call into both interrupt handlers, as we share the IPI for them
  */
-void smp_call_function_interrupt(void)
+void __irq_entry smp_call_function_interrupt(void)
 {
 	irq_enter();
 	generic_smp_call_function_single_interrupt();
@@ -159,7 +160,6 @@ void __init smp_cpus_done(unsigned int max_cpus)
 {
 	mp_ops->cpus_done();
 	synchronise_count_master();
-	test_tsc_synchronization();
 }
 
 /* called from main before smp_init() */

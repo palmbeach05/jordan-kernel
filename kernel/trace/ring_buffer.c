@@ -20,7 +20,6 @@
 #include <linux/cpu.h>
 #include <linux/fs.h>
 
-#include <asm/local.h>
 #include "trace.h"
 
 /*
@@ -398,18 +397,21 @@ int ring_buffer_print_page_header(struct trace_seq *s)
 	int ret;
 
 	ret = trace_seq_printf(s, "\tfield: u64 timestamp;\t"
-			       "offset:0;\tsize:%u;\n",
-			       (unsigned int)sizeof(field.time_stamp));
+			       "offset:0;\tsize:%u;\tsigned:%u;\n",
+			       (unsigned int)sizeof(field.time_stamp),
+			       (unsigned int)is_signed_type(u64));
 
 	ret = trace_seq_printf(s, "\tfield: local_t commit;\t"
-			       "offset:%u;\tsize:%u;\n",
+			       "offset:%u;\tsize:%u;\tsigned:%u;\n",
 			       (unsigned int)offsetof(typeof(field), commit),
-			       (unsigned int)sizeof(field.commit));
+			       (unsigned int)sizeof(field.commit),
+			       (unsigned int)is_signed_type(long));
 
 	ret = trace_seq_printf(s, "\tfield: char data;\t"
-			       "offset:%u;\tsize:%u;\n",
+			       "offset:%u;\tsize:%u;\tsigned:%u;\n",
 			       (unsigned int)offsetof(typeof(field), data),
-			       (unsigned int)BUF_PAGE_SIZE);
+			       (unsigned int)BUF_PAGE_SIZE,
+			       (unsigned int)is_signed_type(char));
 
 	return ret;
 }
@@ -1191,9 +1193,6 @@ rb_remove_pages(struct ring_buffer_per_cpu *cpu_buffer, unsigned nr_pages)
 	struct list_head *p;
 	unsigned i;
 
-	atomic_inc(&cpu_buffer->record_disabled);
-	synchronize_sched();
-
 	spin_lock_irq(&cpu_buffer->reader_lock);
 	rb_head_page_deactivate(cpu_buffer);
 
@@ -1209,12 +1208,9 @@ rb_remove_pages(struct ring_buffer_per_cpu *cpu_buffer, unsigned nr_pages)
 		return;
 
 	rb_reset_cpu(cpu_buffer);
-	spin_unlock_irq(&cpu_buffer->reader_lock);
-
 	rb_check_pages(cpu_buffer);
 
-	atomic_dec(&cpu_buffer->record_disabled);
-
+	spin_unlock_irq(&cpu_buffer->reader_lock);
 }
 
 static void
@@ -1224,9 +1220,6 @@ rb_insert_pages(struct ring_buffer_per_cpu *cpu_buffer,
 	struct buffer_page *bpage;
 	struct list_head *p;
 	unsigned i;
-
-	atomic_inc(&cpu_buffer->record_disabled);
-	synchronize_sched();
 
 	spin_lock_irq(&cpu_buffer->reader_lock);
 	rb_head_page_deactivate(cpu_buffer);
@@ -1240,22 +1233,15 @@ rb_insert_pages(struct ring_buffer_per_cpu *cpu_buffer,
 		list_add_tail(&bpage->list, cpu_buffer->pages);
 	}
 	rb_reset_cpu(cpu_buffer);
-	spin_unlock_irq(&cpu_buffer->reader_lock);
-
 	rb_check_pages(cpu_buffer);
 
-	atomic_dec(&cpu_buffer->record_disabled);
+	spin_unlock_irq(&cpu_buffer->reader_lock);
 }
 
 /**
  * ring_buffer_resize - resize the ring buffer
  * @buffer: the buffer to resize.
  * @size: the new size.
- *
- * The tracer is responsible for making sure that the buffer is
- * not being used while changing the size.
- * Note: We may be able to change the above requirement by using
- *  RCU synchronizations.
  *
  * Minimum size is 2 * BUF_PAGE_SIZE.
  *
@@ -1287,6 +1273,11 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
 
 	if (size == buffer_size)
 		return size;
+
+	atomic_inc(&buffer->record_disabled);
+
+	/* Make sure all writers are done with this buffer. */
+	synchronize_sched();
 
 	mutex_lock(&buffer->mutex);
 	get_online_cpus();
@@ -1350,6 +1341,8 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
 	put_online_cpus();
 	mutex_unlock(&buffer->mutex);
 
+	atomic_dec(&buffer->record_disabled);
+
 	return size;
 
  free_pages:
@@ -1359,6 +1352,7 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
 	}
 	put_online_cpus();
 	mutex_unlock(&buffer->mutex);
+	atomic_dec(&buffer->record_disabled);
 	return -ENOMEM;
 
 	/*
@@ -1368,6 +1362,7 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
  out_fail:
 	put_online_cpus();
 	mutex_unlock(&buffer->mutex);
+	atomic_dec(&buffer->record_disabled);
 	return -1;
 }
 EXPORT_SYMBOL_GPL(ring_buffer_resize);
@@ -1788,9 +1783,9 @@ rb_reset_tail(struct ring_buffer_per_cpu *cpu_buffer,
 static struct ring_buffer_event *
 rb_move_tail(struct ring_buffer_per_cpu *cpu_buffer,
 	     unsigned long length, unsigned long tail,
-	     struct buffer_page *commit_page,
 	     struct buffer_page *tail_page, u64 *ts)
 {
+	struct buffer_page *commit_page = cpu_buffer->commit_page;
 	struct ring_buffer *buffer = cpu_buffer->buffer;
 	struct buffer_page *next_page;
 	int ret;
@@ -1893,13 +1888,10 @@ static struct ring_buffer_event *
 __rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
 		  unsigned type, unsigned long length, u64 *ts)
 {
-	struct buffer_page *tail_page, *commit_page;
+	struct buffer_page *tail_page;
 	struct ring_buffer_event *event;
 	unsigned long tail, write;
 
-	commit_page = cpu_buffer->commit_page;
-	/* we just need to protect against interrupts */
-	barrier();
 	tail_page = cpu_buffer->tail_page;
 	write = local_add_return(length, &tail_page->write);
 
@@ -1910,7 +1902,7 @@ __rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
 	/* See if we shot pass the end of this buffer page */
 	if (write > BUF_PAGE_SIZE)
 		return rb_move_tail(cpu_buffer, length, tail,
-				    commit_page, tail_page, ts);
+				    tail_page, ts);
 
 	/* We reserved something on the buffer */
 

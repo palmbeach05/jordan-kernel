@@ -86,9 +86,11 @@
 #include "netlabel.h"
 #include "audit.h"
 
+#define XATTR_SELINUX_SUFFIX "selinux"
+#define XATTR_NAME_SELINUX XATTR_SECURITY_PREFIX XATTR_SELINUX_SUFFIX
+
 #define NUM_SEL_MNT_OPTS 5
 
-extern unsigned int policydb_loaded_version;
 extern int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm);
 extern struct security_operations *security_ops;
 
@@ -447,13 +449,6 @@ static int sb_finish_set_opts(struct super_block *sb)
 
 	/* Special handling for sysfs. Is genfs but also has setxattr handler*/
 	if (strncmp(sb->s_type->name, "sysfs", sizeof("sysfs")) == 0)
-		sbsec->flags |= SE_SBLABELSUPP;
-
-	/*
-	 * Special handling for rootfs. Is genfs but supports
-	 * setting SELinux context on in-core inodes.
-	 */	
-	if (strncmp(sb->s_type->name, "rootfs", sizeof("rootfs")) == 0)
 		sbsec->flags |= SE_SBLABELSUPP;
 
 	/* Initialize the root inode. */
@@ -1865,65 +1860,6 @@ static inline u32 open_file_to_av(struct file *file)
 
 /* Hook functions begin here. */
 
-static int selinux_binder_set_context_mgr(struct task_struct *mgr)
-{
-	u32 mysid = current_sid();
-	u32 mgrsid = task_sid(mgr);
-
-	return avc_has_perm(mysid, mgrsid, SECCLASS_BINDER, BINDER__SET_CONTEXT_MGR, NULL);
-}
-
-static int selinux_binder_transaction(struct task_struct *from, struct task_struct *to)
-{
-	u32 mysid = current_sid();
-	u32 fromsid = task_sid(from);
-	u32 tosid = task_sid(to);
-	int rc;
-
-	if (mysid != fromsid) {
-		rc = avc_has_perm(mysid, fromsid, SECCLASS_BINDER, BINDER__IMPERSONATE, NULL);
-		if (rc)
-			return rc;
-	}
-
-	return avc_has_perm(fromsid, tosid, SECCLASS_BINDER, BINDER__CALL, NULL);
-}
-
-static int selinux_binder_transfer_binder(struct task_struct *from, struct task_struct *to)
-{
-	u32 fromsid = task_sid(from);
-	u32 tosid = task_sid(to);
-	return avc_has_perm(fromsid, tosid, SECCLASS_BINDER, BINDER__TRANSFER, NULL);
-}
-
-static int selinux_binder_transfer_file(struct task_struct *from, struct task_struct *to, struct file *file)
-{
-	u32 sid = task_sid(to);
-	struct file_security_struct *fsec = file->f_security;
-	struct inode *inode = file->f_path.dentry->d_inode;
-	struct inode_security_struct *isec = inode->i_security;
-	struct common_audit_data ad;
-	int rc;
-
-	COMMON_AUDIT_DATA_INIT(&ad, FS);
-	ad.u.fs.path = file->f_path;
-
-	if (sid != fsec->sid) {
-		rc = avc_has_perm(sid, fsec->sid,
-				  SECCLASS_FD,
-				  FD__USE,
-				  &ad);
-		if (rc)
-			return rc;
-	}
-
-	if (unlikely(IS_PRIVATE(inode)))
-		return 0;
-
-	return avc_has_perm(sid, isec->sid, isec->sclass, file_to_av(file),
-			    &ad);
-}
-
 static int selinux_ptrace_access_check(struct task_struct *child,
 				     unsigned int mode)
 {
@@ -2200,13 +2136,6 @@ static int selinux_bprm_set_creds(struct linux_binprm *bprm)
 		new_tsec->sid = old_tsec->exec_sid;
 		/* Reset exec SID on execve. */
 		new_tsec->exec_sid = 0;
-
-		/*
-		 * Minimize confusion: if no_new_privs and a transition is
-		 * explicitly requested, then fail the exec.
-		 */
-		if (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS)
-			return -EPERM;
 	} else {
 		/* Check for a default transition on this program. */
 		rc = security_transition_sid(old_tsec->sid, isec->sid,
@@ -2218,8 +2147,7 @@ static int selinux_bprm_set_creds(struct linux_binprm *bprm)
 	COMMON_AUDIT_DATA_INIT(&ad, FS);
 	ad.u.fs.path = bprm->file->f_path;
 
-	if ((bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID) ||
-	    (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS))
+	if (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID)
 		new_tsec->sid = old_tsec->sid;
 
 	if (new_tsec->sid == old_tsec->sid) {
@@ -2437,7 +2365,7 @@ static void selinux_bprm_committing_creds(struct linux_binprm *bprm)
 			initrlim = init_task.signal->rlim + i;
 			rlim->rlim_cur = min(rlim->rlim_max, initrlim->rlim_cur);
 		}
-		update_rlimit_cpu(current->signal->rlim[RLIMIT_CPU].rlim_cur);
+		update_rlimit_cpu(rlim->rlim_cur);
 	}
 }
 
@@ -4165,7 +4093,7 @@ static int selinux_sock_rcv_skb_compat(struct sock *sk, struct sk_buff *skb,
 	char *addrp;
 
 	COMMON_AUDIT_DATA_INIT(&ad, NET);
-	ad.u.net.netif = skb->iif;
+	ad.u.net.netif = skb->skb_iif;
 	ad.u.net.family = family;
 	err = selinux_parse_skb(skb, &ad, &addrp, 1, NULL);
 	if (err)
@@ -4227,7 +4155,7 @@ static int selinux_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
 		return 0;
 
 	COMMON_AUDIT_DATA_INIT(&ad, NET);
-	ad.u.net.netif = skb->iif;
+	ad.u.net.netif = skb->skb_iif;
 	ad.u.net.family = family;
 	err = selinux_parse_skb(skb, &ad, &addrp, 1, NULL);
 	if (err)
@@ -4239,7 +4167,7 @@ static int selinux_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
 		err = selinux_skb_peerlbl_sid(skb, family, &peer_sid);
 		if (err)
 			return err;
-		err = selinux_inet_sys_rcv_skb(skb->iif, addrp, family,
+		err = selinux_inet_sys_rcv_skb(skb->skb_iif, addrp, family,
 					       peer_sid, &ad);
 		if (err) {
 			selinux_netlbl_err(skb, err, 0);
@@ -4794,10 +4722,7 @@ static int selinux_netlink_send(struct sock *sk, struct sk_buff *skb)
 	if (err)
 		return err;
 
-	if (policydb_loaded_version >= POLICYDB_VERSION_NLCLASS)
-		err = selinux_nlmsg_perm(sk, skb);
-
-	return err;
+	return selinux_nlmsg_perm(sk, skb);
 }
 
 static int selinux_netlink_recv(struct sk_buff *skb, int capability)
@@ -5533,11 +5458,6 @@ static int selinux_key_getsecurity(struct key *key, char **_buffer)
 static struct security_operations selinux_ops = {
 	.name =				"selinux",
 
-	.binder_set_context_mgr =	selinux_binder_set_context_mgr,
-	.binder_transaction =		selinux_binder_transaction,
-	.binder_transfer_binder =	selinux_binder_transfer_binder,
-	.binder_transfer_file =			selinux_binder_transfer_file,
-
 	.ptrace_access_check =		selinux_ptrace_access_check,
 	.ptrace_traceme =		selinux_ptrace_traceme,
 	.capget =			selinux_capget,
@@ -5915,11 +5835,11 @@ int selinux_disable(void)
 	selinux_disabled = 1;
 	selinux_enabled = 0;
 
-	/* Try to destroy the avc node cache */
-	avc_disable();
-
 	/* Reset security_ops to the secondary module, dummy or capability. */
 	security_ops = secondary_ops;
+
+	/* Try to destroy the avc node cache */
+	avc_disable();
 
 	/* Unregister netfilter hooks. */
 	selinux_nf_ip_exit();

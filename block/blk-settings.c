@@ -8,6 +8,7 @@
 #include <linux/blkdev.h>
 #include <linux/bootmem.h>	/* for max_pfn/max_low_pfn */
 #include <linux/gcd.h>
+#include <linux/jiffies.h>
 
 #include "blk.h"
 
@@ -145,7 +146,7 @@ void blk_queue_make_request(struct request_queue *q, make_request_fn *mfn)
 	q->nr_batching = BLK_BATCH_REQ;
 
 	q->unplug_thresh = 4;		/* hmm */
-	q->unplug_delay = (3 * HZ) / 1000;	/* 3 milliseconds */
+	q->unplug_delay = msecs_to_jiffies(3);	/* 3 milliseconds */
 	if (q->unplug_delay == 0)
 		q->unplug_delay = 1;
 
@@ -553,11 +554,18 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		ret = -1;
 	}
 
+	/*
+	 * Temporarily disable discard granularity. It's currently buggy
+	 * since we default to 0 for discard_granularity, hence this
+	 * "failure" will always trigger for non-zero offsets.
+	 */
+#if 0
 	if (offset &&
 	    (offset & (b->discard_granularity - 1)) != b->discard_alignment) {
 		t->discard_misaligned = 1;
 		ret = -1;
 	}
+#endif
 
 	/* If top has no alignment offset, inherit from bottom */
 	if (!t->alignment_offset)
@@ -586,28 +594,6 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 	return ret;
 }
 EXPORT_SYMBOL(blk_stack_limits);
-
-/**
- * bdev_stack_limits - adjust queue limits for stacked drivers
- * @t:	the stacking driver limits (top device)
- * @bdev:  the component block_device (bottom)
- * @start:  first data sector within component device
- *
- * Description:
- *    Merges queue limits for a top device and a block_device.  Returns
- *    0 if alignment didn't change.  Returns -1 if adding the bottom
- *    device caused misalignment.
- */
-int bdev_stack_limits(struct queue_limits *t, struct block_device *bdev,
-		      sector_t start)
-{
-	struct request_queue *bq = bdev_get_queue(bdev);
-
-	start += get_start_sect(bdev);
-
-	return blk_stack_limits(t, &bq->limits, start << 9);
-}
-EXPORT_SYMBOL(bdev_stack_limits);
 
 /**
  * disk_stack_limits - adjust queue limits for stacked drivers

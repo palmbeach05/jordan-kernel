@@ -257,6 +257,23 @@ config SCSI_SCAN_ASYNC
 	  You can override this choice by specifying "scsi_mod.scan=sync"
 	  or async on the kernel's command line.
 
+config SCSI_WAIT_SCAN
+	tristate  # No prompt here, this is an invisible symbol.
+	default m
+	depends on SCSI
+	depends on MODULES
+# scsi_wait_scan is a loadable module which waits until all the async scans are
+# complete.  The idea is to use it in initrd/ initramfs scripts.  You modprobe
+# it after all the modprobes of the root SCSI drivers and it will wait until
+# they have all finished scanning their buses before allowing the boot to
+# proceed.  (This method is not applicable if targets boot independently in
+# parallel with the initiator, or with transports with non-deterministic target
+# discovery schemes, or if a transport driver does not support scsi_wait_scan.)
+#
+# This symbol is not exposed as a prompt because little is to be gained by
+# disabling it, whereas people who accidentally switch it off may wonder why
+# their mkinitrd gets into trouble.
+
 menu "SCSI Transports"
 	depends on SCSI
 
@@ -371,6 +388,16 @@ config BLK_DEV_3W_XXXX_RAID
 	  Please read the comments at the top of
 	  <file:drivers/scsi/3w-xxxx.c>.
 
+config SCSI_HPSA
+	tristate "HP Smart Array SCSI driver"
+	depends on PCI && SCSI
+	help
+	  This driver supports HP Smart Array Controllers (circa 2009).
+	  It is a SCSI alternative to the cciss driver, which is a block
+	  driver.  Anyone wishing to use HP Smart Array controllers who
+	  would prefer the devices be presented to linux as SCSI devices,
+	  rather than as generic block devices should say Y here.
+
 config SCSI_3W_9XXX
 	tristate "3ware 9xxx SATA-RAID support"
 	depends on PCI && SCSI
@@ -381,6 +408,17 @@ config SCSI_3W_9XXX
 
 	  Please read the comments at the top of
 	  <file:drivers/scsi/3w-9xxx.c>.
+
+config SCSI_3W_SAS
+	tristate "3ware 97xx SAS/SATA-RAID support"
+	depends on PCI && SCSI
+	help
+	  This driver supports the LSI 3ware 9750 6Gb/s SAS/SATA-RAID cards.
+
+	  <http://www.lsi.com>
+
+	  Please read the comments at the top of
+	  <file:drivers/scsi/3w-sas.c>.
 
 config SCSI_7000FASST
 	tristate "7000FASST SCSI support"
@@ -604,6 +642,14 @@ config SCSI_FLASHPOINT
 	  substantial, so users of MultiMaster Host Adapters may not
 	  wish to include it.
 
+config VMWARE_PVSCSI
+	tristate "VMware PVSCSI driver support"
+	depends on PCI && SCSI && X86
+	help
+	  This driver supports VMware's para virtualized SCSI HBA.
+	  To compile this driver as a module, choose M here: the
+	  module will be called vmw_pvscsi.
+
 config LIBFC
 	tristate "LibFC module"
 	select SCSI_FC_ATTRS
@@ -627,7 +673,7 @@ config FCOE
 config FCOE_FNIC
 	tristate "Cisco FNIC Driver"
 	depends on PCI && X86
-	select LIBFC
+	select LIBFCOE
 	help
 	  This is support for the Cisco PCI-Express FCoE HBA.
 
@@ -1800,6 +1846,14 @@ config SCSI_PMCRAID
 	depends on PCI && SCSI
 	---help---
 	  This driver supports the PMC SIERRA MaxRAID adapters.
+
+config SCSI_PM8001
+	tristate "PMC-Sierra SPC 8001 SAS/SATA Based Host Adapter driver"
+	depends on PCI && SCSI
+	select SCSI_SAS_LIBSAS
+	help
+	  This driver supports PMC-Sierra PCIE SAS/SATA 8x6G SPC 8001 chip
+	  based host adapters.
 
 config SCSI_SRP
 	tristate "SCSI RDMA Protocol helper library"

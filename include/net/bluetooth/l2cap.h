@@ -70,7 +70,6 @@ struct l2cap_conninfo {
 #define L2CAP_LM_TRUSTED	0x0008
 #define L2CAP_LM_RELIABLE	0x0010
 #define L2CAP_LM_SECURE		0x0020
-#define L2CAP_LM_FLUSHABLE	0x0040
 
 /* L2CAP command codes */
 #define L2CAP_COMMAND_REJ	0x01
@@ -317,7 +316,6 @@ struct l2cap_pinfo {
 	__u8		sec_level;
 	__u8		role_switch;
 	__u8		force_reliable;
-	__u8		flushable;
 
 	__u8		conf_req[64];
 	__u8		conf_len;
@@ -326,7 +324,6 @@ struct l2cap_pinfo {
 
 	__u8		next_tx_seq;
 	__u8		expected_ack_seq;
-	__u8		req_seq;
 	__u8		expected_tx_seq;
 	__u8		buffer_seq;
 	__u8		buffer_seq_srej;
@@ -377,6 +374,7 @@ struct l2cap_pinfo {
 #define L2CAP_CONN_SEND_PBIT       0x10
 #define L2CAP_CONN_REMOTE_BUSY     0x20
 #define L2CAP_CONN_LOCAL_BUSY      0x40
+#define L2CAP_CONN_REJ_ACT         0x80
 
 #define __mod_retrans_timer() mod_timer(&l2cap_pi(sk)->retrans_timer, \
 		jiffies +  msecs_to_jiffies(L2CAP_DEFAULT_RETRANS_TO));

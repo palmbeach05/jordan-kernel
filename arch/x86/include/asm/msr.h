@@ -27,18 +27,6 @@ struct msr {
 	};
 };
 
-struct msr_info {
-	u32 msr_no;
-	struct msr reg;
-	struct msr *msrs;
-	int err;
-};
-
-struct msr_regs_info {
-	u32 *regs;
-	int err;
-};
-
 static inline unsigned long long native_read_tscp(unsigned int *aux)
 {
 	unsigned long low, high;
@@ -279,12 +267,12 @@ static inline int wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
 	wrmsr(msr_no, l, h);
 	return 0;
 }
-static inline void rdmsr_on_cpus(const cpumask_t *m, u32 msr_no,
+static inline void rdmsr_on_cpus(const struct cpumask *m, u32 msr_no,
 				struct msr *msrs)
 {
        rdmsr_on_cpu(0, msr_no, &(msrs[0].l), &(msrs[0].h));
 }
-static inline void wrmsr_on_cpus(const cpumask_t *m, u32 msr_no,
+static inline void wrmsr_on_cpus(const struct cpumask *m, u32 msr_no,
 				struct msr *msrs)
 {
        wrmsr_on_cpu(0, msr_no, msrs[0].l, msrs[0].h);

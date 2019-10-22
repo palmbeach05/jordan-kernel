@@ -33,12 +33,12 @@ Table of Contents
   2	Modifying System Parameters
 
   3	Per-Process Parameters
-  3.1	/proc/<pid>/oom_adj & /proc/<pid>/oom_score_adj - Adjust the oom-killer
-								score
+  3.1	/proc/<pid>/oom_adj - Adjust the oom-killer score
   3.2	/proc/<pid>/oom_score - Display current oom-killer score
   3.3	/proc/<pid>/io - Display the IO accounting fields
   3.4	/proc/<pid>/coredump_filter - Core dump filtering settings
   3.5	/proc/<pid>/mountinfo - Information about mounts
+  3.6	/proc/<pid>/comm  & /proc/<pid>/task/<tid>/comm
 
 
 ------------------------------------------------------------------------------
@@ -164,7 +164,6 @@ read the file /proc/PID/status:
   VmExe:        68 kB
   VmLib:      1412 kB
   VmPTE:        20 kb
-  VmSwap:        0 kB
   Threads:        1
   SigQ:   0/28578
   SigPnd: 0000000000000000
@@ -189,12 +188,6 @@ The  statm  file  contains  more  detailed  information about the process
 memory usage. Its seven fields are explained in Table 1-3.  The stat file
 contains details information about the process itself.  Its fields are
 explained in Table 1-4.
-
-(for SMP CONFIG users)
-For making accounting scalable, RSS related information are handled in
-asynchronous manner and the vaule may not be very precise. To see a precise
-snapshot of a moment, you can see /proc/<pid>/smaps file and scan page table.
-It's slow but very precise.
 
 Table 1-2: Contents of the statm files (as of 2.6.30-rc7)
 ..............................................................................
@@ -221,7 +214,6 @@ Table 1-2: Contents of the statm files (as of 2.6.30-rc7)
  VmExe                       size of text segment
  VmLib                       size of shared library code
  VmPTE                       size of page table entries
- VmSwap                      size of swap usage (the number of referred swapents)
  Threads                     number of threads
  SigQ                        number of signals queued/max. number for queue
  SigPnd                      bitmap of pending signals for the thread
@@ -417,7 +409,6 @@ Table 1-5: Kernel info in /proc
  bus         Directory containing bus specific information     
  cmdline     Kernel command line                               
  cpuinfo     Info about the CPU                                
- socinfo     Info about the System on Chip
  devices     Available devices (block and character)           
  dma         Used DMS channels                                 
  filesystems Supported filesystems                             
@@ -1082,7 +1073,8 @@ second).  The meanings of the columns are as follows, from left to right:
 - irq: servicing interrupts
 - softirq: servicing softirqs
 - steal: involuntary wait
-- guest: running a guest
+- guest: running a normal guest
+- guest_nice: running a niced guest
 
 The "intr" line gives counts of interrupts  serviced since boot time, for each
 of the  possible system interrupts.   The first  column  is the  total of  all
@@ -1098,8 +1090,8 @@ The "processes" line gives the number  of processes and threads created, which
 includes (but  is not limited  to) those  created by  calls to the  fork() and
 clone() system calls.
 
-The  "procs_running" line gives the  number of processes  currently running on
-CPUs.
+The "procs_running" line gives the total number of threads that are
+running or ready to run (i.e., the total number of runnable threads).
 
 The   "procs_blocked" line gives  the  number of  processes currently blocked,
 waiting for I/O to complete.
@@ -1111,7 +1103,7 @@ softirq.
 
 
 1.9 Ext4 file system parameters
--------------------------------
+------------------------------
 
 Information about mounted ext4 file systems can be found in
 /proc/fs/ext4.  Each mounted filesystem will have a directory in
@@ -1190,64 +1182,42 @@ of the kernel.
 CHAPTER 3: PER-PROCESS PARAMETERS
 ------------------------------------------------------------------------------
 
-3.1 /proc/<pid>/oom_adj & /proc/<pid>/oom_score_adj- Adjust the oom-killer score
---------------------------------------------------------------------------------
+3.1 /proc/<pid>/oom_adj - Adjust the oom-killer score
+------------------------------------------------------
 
-These file can be used to adjust the badness heuristic used to select which
-process gets killed in out of memory conditions.
+This file can be used to adjust the score used to select which processes
+should be killed in an  out-of-memory  situation.  Giving it a high score will
+increase the likelihood of this process being killed by the oom-killer.  Valid
+values are in the range -16 to +15, plus the special value -17, which disables
+oom-killing altogether for this process.
 
-The badness heuristic assigns a value to each candidate task ranging from 0
-(never kill) to 1000 (always kill) to determine which process is targeted.  The
-units are roughly a proportion along that range of allowed memory the process
-may allocate from based on an estimation of its current memory and swap use.
-For example, if a task is using all allowed memory, its badness score will be
-1000.  If it is using half of its allowed memory, its score will be 500.
+The process to be killed in an out-of-memory situation is selected among all others
+based on its badness score. This value equals the original memory size of the process
+and is then updated according to its CPU time (utime + stime) and the
+run time (uptime - start time). The longer it runs the smaller is the score.
+Badness score is divided by the square root of the CPU time and then by
+the double square root of the run time.
 
-There is an additional factor included in the badness score: root
-processes are given 3% extra memory over other tasks.
+Swapped out tasks are killed first. Half of each child's memory size is added to
+the parent's score if they do not share the same memory. Thus forking servers
+are the prime candidates to be killed. Having only one 'hungry' child will make
+parent less preferable than the child.
 
-The amount of "allowed" memory depends on the context in which the oom killer
-was called.  If it is due to the memory assigned to the allocating task's cpuset
-being exhausted, the allowed memory represents the set of mems assigned to that
-cpuset.  If it is due to a mempolicy's node(s) being exhausted, the allowed
-memory represents the set of mempolicy nodes.  If it is due to a memory
-limit (or swap limit) being reached, the allowed memory is that configured
-limit.  Finally, if it is due to the entire system being out of memory, the
-allowed memory represents all allocatable resources.
+/proc/<pid>/oom_score shows process' current badness score.
 
-The value of /proc/<pid>/oom_score_adj is added to the badness score before it
-is used to determine which task to kill.  Acceptable values range from -1000
-(OOM_SCORE_ADJ_MIN) to +1000 (OOM_SCORE_ADJ_MAX).  This allows userspace to
-polarize the preference for oom killing either by always preferring a certain
-task or completely disabling it.  The lowest possible value, -1000, is
-equivalent to disabling oom killing entirely for that task since it will always
-report a badness score of 0.
+The following heuristics are then applied:
+ * if the task was reniced, its score doubles
+ * superuser or direct hardware access tasks (CAP_SYS_ADMIN, CAP_SYS_RESOURCE
+ 	or CAP_SYS_RAWIO) have their score divided by 4
+ * if oom condition happened in one cpuset and checked process does not belong
+ 	to it, its score is divided by 8
+ * the resulting score is multiplied by two to the power of oom_adj, i.e.
+	points <<= oom_adj when it is positive and
+	points >>= -(oom_adj) otherwise
 
-Consequently, it is very simple for userspace to define the amount of memory to
-consider for each task.  Setting a /proc/<pid>/oom_score_adj value of +500, for
-example, is roughly equivalent to allowing the remainder of tasks sharing the
-same system, cpuset, mempolicy, or memory controller resources to use at least
-50% more memory.  A value of -500, on the other hand, would be roughly
-equivalent to discounting 50% of the task's allowed memory from being considered
-as scoring against the task.
-
-For backwards compatibility with previous kernels, /proc/<pid>/oom_adj may also
-be used to tune the badness score.  Its acceptable values range from -16
-(OOM_ADJUST_MIN) to +15 (OOM_ADJUST_MAX) and a special value of -17
-(OOM_DISABLE) to disable oom killing entirely for that task.  Its value is
-scaled linearly with /proc/<pid>/oom_score_adj.
-
-Writing to /proc/<pid>/oom_score_adj or /proc/<pid>/oom_adj will change the
-other with its scaled value.
-
-NOTICE: /proc/<pid>/oom_adj is deprecated and will be removed, please see
-Documentation/feature-removal-schedule.txt.
-
-Caveat: when a parent task is selected, the oom killer will sacrifice any first
-generation children with seperate address spaces instead, if possible.  This
-avoids servers and important system daemons from being killed and loses the
-minimal amount of work.
-
+The task with the highest badness score is then selected and its children
+are killed, process itself will be killed in an OOM situation when it does
+not have children or some of them disabled oom like described above.
 
 3.2 /proc/<pid>/oom_score - Display current oom-killer score
 -------------------------------------------------------------
@@ -1440,3 +1410,11 @@ For more information on mount propagation see:
 
   Documentation/filesystems/sharedsubtree.txt
 
+
+3.6	/proc/<pid>/comm  & /proc/<pid>/task/<tid>/comm
+--------------------------------------------------------
+These files provide a method to access a tasks comm value. It also allows for
+a task to set its own or one of its thread siblings comm value. The comm value
+is limited in size compared to the cmdline value, so writing anything longer
+then the kernel's TASK_COMM_LEN (currently 16 chars) will result in a truncated
+comm value.

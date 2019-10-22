@@ -24,8 +24,14 @@ struct mem_type {
 
 const struct mem_type *get_mem_type(unsigned int type);
 
+extern void __flush_dcache_page(struct address_space *mapping, struct page *page);
+
 #endif
 
-struct machine_desc;
-void __init bootmem_init(struct machine_desc *);
-void arm_mm_memblock_reserve(void);
+struct map_desc;
+struct meminfo;
+struct pglist_data;
+
+void __init create_mapping(struct map_desc *md);
+void __init bootmem_init(void);
+void reserve_node_zero(struct pglist_data *pgdat);

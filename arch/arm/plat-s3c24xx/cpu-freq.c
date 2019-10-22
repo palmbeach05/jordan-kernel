@@ -1,6 +1,6 @@
 /* linux/arch/arm/plat-s3c24xx/cpu-freq.c
  *
- * Copyright (c) 2006,2007,2008 Simtec Electronics
+ * Copyright (c) 2006-2008 Simtec Electronics
  *	http://armlinux.simtec.co.uk/
  *	Ben Dooks <ben@simtec.co.uk>
  *
@@ -433,7 +433,7 @@ static int s3c_cpufreq_verify(struct cpufreq_policy *policy)
 static struct cpufreq_frequency_table suspend_pll;
 static unsigned int suspend_freq;
 
-static int s3c_cpufreq_suspend(struct cpufreq_policy *policy)
+static int s3c_cpufreq_suspend(struct cpufreq_policy *policy, pm_message_t pmsg)
 {
 	suspend_pll.frequency = clk_get_rate(_clk_mpll);
 	suspend_pll.index = __raw_readl(S3C2410_MPLLCON);

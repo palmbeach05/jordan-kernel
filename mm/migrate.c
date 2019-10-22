@@ -32,8 +32,6 @@
 #include <linux/security.h>
 #include <linux/memcontrol.h>
 #include <linux/syscalls.h>
-#include <linux/gfp.h>
-#include <asm/tlbflush.h>
 
 #include "internal.h"
 
@@ -41,8 +39,7 @@
 
 /*
  * migrate_prep() needs to be called before we start compiling a list of pages
- * to be migrated using isolate_lru_page(). If scheduling work on other CPUs is
- * undesirable, use migrate_prep_local()
+ * to be migrated using isolate_lru_page().
  */
 int migrate_prep(void)
 {
@@ -53,14 +50,6 @@ int migrate_prep(void)
 	 * pages that may be busy.
 	 */
 	lru_add_drain_all();
-
-	return 0;
-}
-
-/* Do the necessary work of migrate_prep but not if it involves other CPUs */
-int migrate_prep_local(void)
-{
-	lru_add_drain();
 
 	return 0;
 }
@@ -286,6 +275,8 @@ static int migrate_page_move_mapping(struct address_space *mapping,
  */
 static void migrate_page_copy(struct page *newpage, struct page *page)
 {
+	int anon;
+
 	copy_highpage(newpage, page);
 
 	if (PageError(page))
@@ -322,6 +313,8 @@ static void migrate_page_copy(struct page *newpage, struct page *page)
 	ClearPageSwapCache(page);
 	ClearPagePrivate(page);
 	set_page_private(page, 0);
+	/* page->mapping contains a flag for PageAnon() */
+	anon = PageAnon(page);
 	page->mapping = NULL;
 
 	/*
@@ -500,8 +493,7 @@ static int fallback_migrate_page(struct address_space *mapping,
  *   < 0 - error code
  *  == 0 - success
  */
-static int move_to_new_page(struct page *newpage, struct page *page,
-						int remap_swapcache)
+static int move_to_new_page(struct page *newpage, struct page *page)
 {
 	struct address_space *mapping;
 	int rc;
@@ -536,12 +528,10 @@ static int move_to_new_page(struct page *newpage, struct page *page,
 	else
 		rc = fallback_migrate_page(mapping, newpage, page);
 
-	if (rc) {
+	if (!rc)
+		remove_migration_ptes(page, newpage);
+	else
 		newpage->mapping = NULL;
-	} else {
-		if (remap_swapcache)
-			remove_migration_ptes(page, newpage);
-	}
 
 	unlock_page(newpage);
 
@@ -558,11 +548,9 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 	int rc = 0;
 	int *result = NULL;
 	struct page *newpage = get_new_page(page, private, &result);
-	int remap_swapcache = 1;
 	int rcu_locked = 0;
 	int charge = 0;
 	struct mem_cgroup *mem = NULL;
-	struct anon_vma *anon_vma = NULL;
 
 	if (!newpage)
 		return -ENOMEM;
@@ -619,33 +607,6 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 	if (PageAnon(page)) {
 		rcu_read_lock();
 		rcu_locked = 1;
-		/* Determine how to safely use anon_vma */
-		if (!page_mapped(page)) {
-			if (!PageSwapCache(page))
-				goto rcu_unlock;
-
-			/*
-			 * We cannot be sure that the anon_vma of an unmapped
-			 * swapcache page is safe to use because we don't
-			 * know in advance if the VMA that this page belonged
-			 * to still exists. If the VMA and others sharing the
-			 * data have been freed, then the anon_vma could
-			 * already be invalid.
-			 *
-			 * To avoid this possibility, swapcache pages get
-			 * migrated but are not remapped when migration
-			 * completes
-			 */
-			remap_swapcache = 0;
-		} else {
-			/*
-			 * Take a reference count on the anon_vma if the
-			 * page is mapped so that it is guaranteed to
-			 * exist when the page is remapped later
-			 */
-			anon_vma = page_anon_vma(page);
-			get_anon_vma(anon_vma);
-		}
 	}
 
 	/*
@@ -680,16 +641,11 @@ static int unmap_and_move(new_page_t get_new_page, unsigned long private,
 
 skip_unmap:
 	if (!page_mapped(page))
-		rc = move_to_new_page(newpage, page, remap_swapcache);
+		rc = move_to_new_page(newpage, page);
 
-	if (rc && remap_swapcache)
+	if (rc)
 		remove_migration_ptes(page, page);
 rcu_unlock:
-
-	/* Drop an anon_vma reference if we took one */
-	if (anon_vma)
-		drop_anon_vma(anon_vma);
-
 	if (rcu_locked)
 		rcu_read_unlock();
 uncharge:
@@ -752,13 +708,6 @@ int migrate_pages(struct list_head *from,
 	struct page *page2;
 	int swapwrite = current->flags & PF_SWAPWRITE;
 	int rc;
-	unsigned long flags;
-
-	local_irq_save(flags);
-	list_for_each_entry(page, from, lru)
-		__inc_zone_page_state(page, NR_ISOLATED_ANON +
-				page_is_file_cache(page));
-	local_irq_restore(flags);
 
 	if (!swapwrite)
 		current->flags |= PF_SWAPWRITE;
@@ -885,8 +834,11 @@ static int do_move_page_to_node_array(struct mm_struct *mm,
 			goto put_and_set;
 
 		err = isolate_lru_page(page);
-		if (!err)
+		if (!err) {
 			list_add_tail(&page->lru, &pagelist);
+			inc_zone_page_state(page, NR_ISOLATED_ANON +
+					    page_is_file_cache(page));
+		}
 put_and_set:
 		/*
 		 * Either remove the duplicate refcount from
@@ -960,9 +912,6 @@ static int do_pages_move(struct mm_struct *mm, struct task_struct *task,
 				goto out_pm;
 
 			err = -ENODEV;
-			if (node < 0 || node >= MAX_NUMNODES)
-				goto out_pm;
-
 			if (!node_state(node, N_HIGH_MEMORY))
 				goto out_pm;
 
@@ -1054,7 +1003,7 @@ static int do_pages_stat(struct mm_struct *mm, unsigned long nr_pages,
 	int err;
 
 	for (i = 0; i < nr_pages; i += chunk_nr) {
-		if (chunk_nr + i > nr_pages)
+		if (chunk_nr > nr_pages - i)
 			chunk_nr = nr_pages - i;
 
 		err = copy_from_user(chunk_pages, &pages[i],

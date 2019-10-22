@@ -151,8 +151,7 @@
  * Set of flags that will prevent slab merging
  */
 #define SLUB_NEVER_MERGE (SLAB_RED_ZONE | SLAB_POISON | SLAB_STORE_USER | \
-		SLAB_TRACE | SLAB_DESTROY_BY_RCU | SLAB_NOLEAKTRACE | \
-		SLAB_FAILSLAB)
+		SLAB_TRACE | SLAB_DESTROY_BY_RCU | SLAB_NOLEAKTRACE)
 
 #define SLUB_MERGE_SAME (SLAB_DEBUG_FREE | SLAB_RECLAIM_ACCOUNT | \
 		SLAB_CACHE_DMA | SLAB_NOTRACK)
@@ -1021,9 +1020,6 @@ static int __init setup_slub_debug(char *str)
 		case 't':
 			slub_debug |= SLAB_TRACE;
 			break;
-		case 'a':
-			slub_debug |= SLAB_FAILSLAB;
-			break;
 		default:
 			printk(KERN_ERR "slub_debug option '%c' "
 				"unknown. skipped\n", *str);
@@ -1722,7 +1718,7 @@ static __always_inline void *slab_alloc(struct kmem_cache *s,
 	lockdep_trace_alloc(gfpflags);
 	might_sleep_if(gfpflags & __GFP_WAIT);
 
-	if (should_failslab(s->objsize, gfpflags, s->flags))
+	if (should_failslab(s->objsize, gfpflags))
 		return NULL;
 
 	local_irq_save(flags);
@@ -1739,7 +1735,7 @@ static __always_inline void *slab_alloc(struct kmem_cache *s,
 	}
 	local_irq_restore(flags);
 
-	if (unlikely((gfpflags & __GFP_ZERO) && object))
+	if (unlikely(gfpflags & __GFP_ZERO) && object)
 		memset(object, 0, objsize);
 
 	kmemcheck_slab_alloc(s, gfpflags, object, c->objsize);
@@ -1758,7 +1754,7 @@ void *kmem_cache_alloc(struct kmem_cache *s, gfp_t gfpflags)
 }
 EXPORT_SYMBOL(kmem_cache_alloc);
 
-#ifdef CONFIG_KMEMTRACE
+#ifdef CONFIG_TRACING
 void *kmem_cache_alloc_notrace(struct kmem_cache *s, gfp_t gfpflags)
 {
 	return slab_alloc(s, gfpflags, -1, _RET_IP_);
@@ -1779,7 +1775,7 @@ void *kmem_cache_alloc_node(struct kmem_cache *s, gfp_t gfpflags, int node)
 EXPORT_SYMBOL(kmem_cache_alloc_node);
 #endif
 
-#ifdef CONFIG_KMEMTRACE
+#ifdef CONFIG_TRACING
 void *kmem_cache_alloc_node_notrace(struct kmem_cache *s,
 				    gfp_t gfpflags,
 				    int node)
@@ -4175,23 +4171,6 @@ static ssize_t trace_store(struct kmem_cache *s, const char *buf,
 }
 SLAB_ATTR(trace);
 
-#ifdef CONFIG_FAILSLAB
-static ssize_t failslab_show(struct kmem_cache *s, char *buf)
-{
-	return sprintf(buf, "%d\n", !!(s->flags & SLAB_FAILSLAB));
-}
-
-static ssize_t failslab_store(struct kmem_cache *s, const char *buf,
-							size_t length)
-{
-	s->flags &= ~SLAB_FAILSLAB;
-	if (buf[0] == '1')
-		s->flags |= SLAB_FAILSLAB;
-	return length;
-}
-SLAB_ATTR(failslab);
-#endif
-
 static ssize_t reclaim_account_show(struct kmem_cache *s, char *buf)
 {
 	return sprintf(buf, "%d\n", !!(s->flags & SLAB_RECLAIM_ACCOUNT));
@@ -4392,12 +4371,28 @@ static int show_stat(struct kmem_cache *s, char *buf, enum stat_item si)
 	return len + sprintf(buf + len, "\n");
 }
 
+static void clear_stat(struct kmem_cache *s, enum stat_item si)
+{
+	int cpu;
+
+	for_each_online_cpu(cpu)
+		get_cpu_slab(s, cpu)->stat[si] = 0;
+}
+
 #define STAT_ATTR(si, text) 					\
 static ssize_t text##_show(struct kmem_cache *s, char *buf)	\
 {								\
 	return show_stat(s, buf, si);				\
 }								\
-SLAB_ATTR_RO(text);						\
+static ssize_t text##_store(struct kmem_cache *s,		\
+				const char *buf, size_t length)	\
+{								\
+	if (buf[0] != '0')					\
+		return -EINVAL;					\
+	clear_stat(s, si);					\
+	return length;						\
+}								\
+SLAB_ATTR(text);						\
 
 STAT_ATTR(ALLOC_FASTPATH, alloc_fastpath);
 STAT_ATTR(ALLOC_SLOWPATH, alloc_slowpath);
@@ -4472,10 +4467,6 @@ static struct attribute *slab_attrs[] = {
 	&deactivate_remote_frees_attr.attr,
 	&order_fallback_attr.attr,
 #endif
-#ifdef CONFIG_FAILSLAB
-	&failslab_attr.attr,
-#endif
-
 	NULL
 };
 
@@ -4528,7 +4519,7 @@ static void kmem_cache_release(struct kobject *kobj)
 	kfree(s);
 }
 
-static const struct sysfs_ops slab_sysfs_ops = {
+static struct sysfs_ops slab_sysfs_ops = {
 	.show = slab_attr_show,
 	.store = slab_attr_store,
 };
@@ -4547,7 +4538,7 @@ static int uevent_filter(struct kset *kset, struct kobject *kobj)
 	return 0;
 }
 
-static const struct kset_uevent_ops slab_uevent_ops = {
+static struct kset_uevent_ops slab_uevent_ops = {
 	.filter = uevent_filter,
 };
 
@@ -4815,31 +4806,3 @@ static int __init slab_proc_init(void)
 }
 module_init(slab_proc_init);
 #endif /* CONFIG_SLABINFO */
-
-#ifdef CONFIG_MUDFLAP
-void slab_check_write(void *ptr, unsigned int sz, const char *location)
-{
-	struct page *page;
-	struct kmem_cache *s;
-	void *obj, *start;
-	unsigned long objnr;
-
-	page = virt_to_head_page(ptr);
-	if (!PageSlab(page))
-		return;
-
-	s = page->slab;
-	start = page_address(page);
-	objnr = (unsigned long)(ptr - start) / s->size;
-	obj = start + s->size * objnr;
-	if (!on_freelist(s, page, obj))
-		return;
-
-	printk(KERN_ERR "ptr: %p, sz: %d, location: %s\n",
-			ptr, sz, location);
-	printk(KERN_ERR "write to freed object, size %d\n",
-			s->size);
-	print_tracking(s, obj);
-	dump_stack();
-}
-#endif

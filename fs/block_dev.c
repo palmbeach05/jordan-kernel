@@ -26,7 +26,6 @@
 #include <linux/namei.h>
 #include <linux/log2.h>
 #include <linux/kmemleak.h>
-#include <linux/cleancache.h>
 #include <asm/uaccess.h>
 #include "internal.h"
 
@@ -70,24 +69,6 @@ static void kill_bdev(struct block_device *bdev)
 	invalidate_bh_lrus();
 	truncate_inode_pages(bdev->bd_inode->i_mapping, 0);
 }	
-EXPORT_SYMBOL(kill_bdev);
-
-/* Invalidate clean unused buffers and pagecache. */
-void invalidate_bdev(struct block_device *bdev)
-{
-	struct address_space *mapping = bdev->bd_inode->i_mapping;
-
-	if (mapping->nrpages == 0)
-		return;
-
-	invalidate_bh_lrus();
-	invalidate_mapping_pages(mapping, 0, -1);
-	/* 99% of the time, we don't need to flush the cleancache on the bdev.
-	 * But, for the strange corners, lets be cautious
-	 */
-	cleancache_invalidate_inode(mapping);
-}
-EXPORT_SYMBOL(invalidate_bdev);
 
 int set_blocksize(struct block_device *bdev, int size)
 {
@@ -265,8 +246,7 @@ struct super_block *freeze_bdev(struct block_device *bdev)
 	if (!sb)
 		goto out;
 	if (sb->s_flags & MS_RDONLY) {
-		sb->s_frozen = SB_FREEZE_TRANS;
-		up_write(&sb->s_umount);
+		deactivate_locked_super(sb);
 		mutex_unlock(&bdev->bd_fsfreeze_mutex);
 		return sb;
 	}
@@ -327,7 +307,7 @@ int thaw_bdev(struct block_device *bdev, struct super_block *sb)
 	BUG_ON(sb->s_bdev != bdev);
 	down_write(&sb->s_umount);
 	if (sb->s_flags & MS_RDONLY)
-		goto out_unfrozen;
+		goto out_deactivate;
 
 	if (sb->s_op->unfreeze_fs) {
 		error = sb->s_op->unfreeze_fs(sb);
@@ -341,11 +321,11 @@ int thaw_bdev(struct block_device *bdev, struct super_block *sb)
 		}
 	}
 
-out_unfrozen:
 	sb->s_frozen = SB_UNFROZEN;
 	smp_wmb();
 	wake_up(&sb->s_wait_unfrozen);
 
+out_deactivate:
 	if (sb)
 		deactivate_locked_super(sb);
 out_unlock:
@@ -425,7 +405,17 @@ static loff_t block_llseek(struct file *file, loff_t offset, int origin)
  
 static int block_fsync(struct file *filp, struct dentry *dentry, int datasync)
 {
-	return sync_blockdev(I_BDEV(filp->f_mapping->host));
+	struct block_device *bdev = I_BDEV(filp->f_mapping->host);
+	int error;
+
+	error = sync_blockdev(bdev);
+	if (error)
+		return error;
+	
+	error = blkdev_issue_flush(bdev, NULL);
+	if (error == -EOPNOTSUPP)
+		error = 0;
+	return error;
 }
 
 /*

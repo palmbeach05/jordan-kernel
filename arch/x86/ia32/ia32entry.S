@@ -586,7 +586,7 @@ ia32_sys_call_table:
 	.quad compat_sys_settimeofday
 	.quad sys_getgroups16	/* 80 */
 	.quad sys_setgroups16
-	.quad compat_sys_old_select
+	.quad sys32_old_select
 	.quad sys_symlink
 	.quad sys_lstat
 	.quad sys_readlink		/* 85 */
@@ -653,7 +653,7 @@ ia32_sys_call_table:
 	.quad compat_sys_writev
 	.quad sys_getsid
 	.quad sys_fdatasync
-	.quad sys32_sysctl	/* sysctl */
+	.quad compat_sys_sysctl	/* sysctl */
 	.quad sys_mlock		/* 150 */
 	.quad sys_munlock
 	.quad sys_mlockall

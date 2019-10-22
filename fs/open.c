@@ -30,10 +30,9 @@
 #include <linux/audit.h>
 #include <linux/falloc.h>
 #include <linux/fs_struct.h>
-#include <trace/fs.h>
+#include <linux/ima.h>
 
-DEFINE_TRACE(fs_open);
-DEFINE_TRACE(fs_close);
+#include "internal.h"
 
 int vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
@@ -591,6 +590,9 @@ SYSCALL_DEFINE1(chroot, const char __user *, filename)
 	error = -EPERM;
 	if (!capable(CAP_SYS_CHROOT))
 		goto dput_and_out;
+	error = security_path_chroot(&path);
+	if (error)
+		goto dput_and_out;
 
 	set_fs_root(current->fs, &path);
 	error = 0;
@@ -621,11 +623,15 @@ SYSCALL_DEFINE2(fchmod, unsigned int, fd, mode_t, mode)
 	if (err)
 		goto out_putf;
 	mutex_lock(&inode->i_mutex);
+	err = security_path_chmod(dentry, file->f_vfsmnt, mode);
+	if (err)
+		goto out_unlock;
 	if (mode == (mode_t) -1)
 		mode = inode->i_mode;
 	newattrs.ia_mode = (mode & S_IALLUGO) | (inode->i_mode & ~S_IALLUGO);
 	newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
 	err = notify_change(dentry, &newattrs);
+out_unlock:
 	mutex_unlock(&inode->i_mutex);
 	mnt_drop_write(file->f_path.mnt);
 out_putf:
@@ -650,11 +656,15 @@ SYSCALL_DEFINE3(fchmodat, int, dfd, const char __user *, filename, mode_t, mode)
 	if (error)
 		goto dput_and_out;
 	mutex_lock(&inode->i_mutex);
+	error = security_path_chmod(path.dentry, path.mnt, mode);
+	if (error)
+		goto out_unlock;
 	if (mode == (mode_t) -1)
 		mode = inode->i_mode;
 	newattrs.ia_mode = (mode & S_IALLUGO) | (inode->i_mode & ~S_IALLUGO);
 	newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
 	error = notify_change(path.dentry, &newattrs);
+out_unlock:
 	mutex_unlock(&inode->i_mutex);
 	mnt_drop_write(path.mnt);
 dput_and_out:
@@ -668,9 +678,9 @@ SYSCALL_DEFINE2(chmod, const char __user *, filename, mode_t, mode)
 	return sys_fchmodat(AT_FDCWD, filename, mode);
 }
 
-static int chown_common(struct dentry * dentry, uid_t user, gid_t group)
+static int chown_common(struct path *path, uid_t user, gid_t group)
 {
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = path->dentry->d_inode;
 	int error;
 	struct iattr newattrs;
 
@@ -687,7 +697,9 @@ static int chown_common(struct dentry * dentry, uid_t user, gid_t group)
 		newattrs.ia_valid |=
 			ATTR_KILL_SUID | ATTR_KILL_SGID | ATTR_KILL_PRIV;
 	mutex_lock(&inode->i_mutex);
-	error = notify_change(dentry, &newattrs);
+	error = security_path_chown(path, user, group);
+	if (!error)
+		error = notify_change(path->dentry, &newattrs);
 	mutex_unlock(&inode->i_mutex);
 
 	return error;
@@ -704,7 +716,7 @@ SYSCALL_DEFINE3(chown, const char __user *, filename, uid_t, user, gid_t, group)
 	error = mnt_want_write(path.mnt);
 	if (error)
 		goto out_release;
-	error = chown_common(path.dentry, user, group);
+	error = chown_common(&path, user, group);
 	mnt_drop_write(path.mnt);
 out_release:
 	path_put(&path);
@@ -729,7 +741,7 @@ SYSCALL_DEFINE5(fchownat, int, dfd, const char __user *, filename, uid_t, user,
 	error = mnt_want_write(path.mnt);
 	if (error)
 		goto out_release;
-	error = chown_common(path.dentry, user, group);
+	error = chown_common(&path, user, group);
 	mnt_drop_write(path.mnt);
 out_release:
 	path_put(&path);
@@ -748,7 +760,7 @@ SYSCALL_DEFINE3(lchown, const char __user *, filename, uid_t, user, gid_t, group
 	error = mnt_want_write(path.mnt);
 	if (error)
 		goto out_release;
-	error = chown_common(path.dentry, user, group);
+	error = chown_common(&path, user, group);
 	mnt_drop_write(path.mnt);
 out_release:
 	path_put(&path);
@@ -771,7 +783,7 @@ SYSCALL_DEFINE3(fchown, unsigned int, fd, uid_t, user, gid_t, group)
 		goto out_fput;
 	dentry = file->f_path.dentry;
 	audit_inode(NULL, dentry);
-	error = chown_common(dentry, user, group);
+	error = chown_common(&file->f_path, user, group);
 	mnt_drop_write(file->f_path.mnt);
 out_fput:
 	fput(file);
@@ -846,6 +858,7 @@ static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,
 		if (error)
 			goto cleanup_all;
 	}
+	ima_counts_get(f);
 
 	f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
 
@@ -1048,7 +1061,6 @@ long do_sys_open(int dfd, const char __user *filename, int flags, int mode)
 				fsnotify_open(f->f_path.dentry);
 				fd_install(fd, f);
 			}
-			trace_fs_open(fd, tmp);
 		}
 		putname(tmp);
 	}
@@ -1138,7 +1150,6 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	filp = fdt->fd[fd];
 	if (!filp)
 		goto out_unlock;
-	trace_fs_close(fd);
 	rcu_assign_pointer(fdt->fd[fd], NULL);
 	FD_CLR(fd, fdt->close_on_exec);
 	__put_unused_fd(files, fd);

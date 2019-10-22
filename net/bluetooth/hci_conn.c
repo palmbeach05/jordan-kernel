@@ -143,45 +143,14 @@ void hci_setup_sync(struct hci_conn *conn, __u16 handle)
 
 	conn->attempt++;
 
-	BT_DBG("conn->pkt_type = %x", conn->pkt_type);
 	cp.handle   = cpu_to_le16(handle);
-	BT_DBG("remote features 0x%.2x%.2x%.2x%.2x%.2x%.2x%.2x%.2x",
-		conn->features[0], conn->features[1],
-		conn->features[2], conn->features[3],
-		conn->features[4], conn->features[5],
-		conn->features[6], conn->features[7]);
-
-
-	BT_DBG("local features 0x%.2x%.2x%.2x%.2x%.2x%.2x%.2x%.2x",
-		hdev->features[0], hdev->features[1],
-		hdev->features[2], hdev->features[3],
-		hdev->features[4], hdev->features[5],
-		hdev->features[6], hdev->features[7]);
-
-	if (lmp_esco_capable(hdev)) {
-		if ((conn->features[5] & LMP_EDR_ESCO_2M) &&
-						lmp_esco_capable(conn)) {
-			BT_DBG("hci params for 2EV3/S3 nego");
-			conn->pkt_type = 0x038d;
-			cp.max_latency    = cpu_to_le16(0x000a);
-			cp.retrans_effort = 0x01;
-		} else {
-			BT_DBG("hci params for EV3/HV3");
-			conn->pkt_type = 0x03c5;
-			cp.max_latency    = cpu_to_le16(0xffff);
-			cp.retrans_effort = 0xff;
-		}
-
-	} else {
-		BT_DBG("Error case:");
-	}
-
-	BT_DBG("pkt_type modified value = %x", conn->pkt_type);
 	cp.pkt_type = cpu_to_le16(conn->pkt_type);
 
 	cp.tx_bandwidth   = cpu_to_le32(0x00001f40);
 	cp.rx_bandwidth   = cpu_to_le32(0x00001f40);
+	cp.max_latency    = cpu_to_le16(0xffff);
 	cp.voice_setting  = cpu_to_le16(hdev->voice_setting);
+	cp.retrans_effort = 0xff;
 
 	hci_send_cmd(hdev, HCI_OP_SETUP_SYNC_CONN, sizeof(cp), &cp);
 }
@@ -227,11 +196,9 @@ static void hci_conn_idle(unsigned long arg)
 	hci_conn_enter_sniff_mode(conn);
 }
 
-struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type,
-					__u16 pkt_type, bdaddr_t *dst)
+struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type, bdaddr_t *dst)
 {
 	struct hci_conn *conn;
-	struct hci_conn *tmp_conn;
 
 	BT_DBG("%s dst %s", hdev->name, batostr(dst));
 
@@ -247,18 +214,6 @@ struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type,
 	conn->auth_type = HCI_AT_GENERAL_BONDING;
 
 	conn->power_save = 1;
-	tmp_conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, dst);
-	if (tmp_conn) {
-		memcpy(conn->features, tmp_conn->features, 8);
-		BT_DBG("remote features 0x%.2x%.2x%.2x%.2x%.2x%.2x%.2x%.2x",
-			conn->features[0], conn->features[1],
-			conn->features[2], conn->features[3],
-			conn->features[4], conn->features[5],
-			conn->features[6], conn->features[7]);
-	}
-
-	BT_DBG("conn->pkt_type = %x", conn->pkt_type);
-	BT_DBG("hdev->esco_type = %x", hdev->esco_type);
 	conn->disc_timeout = HCI_DISCONN_TIMEOUT;
 
 	switch (type) {
@@ -266,26 +221,17 @@ struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type,
 		conn->pkt_type = hdev->pkt_type & ACL_PTYPE_MASK;
 		break;
 	case SCO_LINK:
-		if (!pkt_type)
-			pkt_type = SCO_ESCO_MASK;
+		if (lmp_esco_capable(hdev))
+			conn->pkt_type = (hdev->esco_type & SCO_ESCO_MASK) |
+					(hdev->esco_type & EDR_ESCO_MASK);
+		else
+			conn->pkt_type = hdev->pkt_type & SCO_PTYPE_MASK;
+		break;
 	case ESCO_LINK:
-		if (!pkt_type)
-			pkt_type = ALL_ESCO_MASK;
-		if (lmp_esco_capable(hdev)) {
-			/* HCI Setup Synchronous Connection Command uses
-			   reverse logic on the EDR_ESCO_MASK bits */
-			conn->pkt_type = (pkt_type ^ EDR_ESCO_MASK) &
-					hdev->esco_type;
-		} else {
-			/* Legacy HCI Add Sco Connection Command uses a
-			   shifted bitmask */
-			conn->pkt_type = (pkt_type << 5) & hdev->pkt_type &
-					SCO_PTYPE_MASK;
-		}
+		conn->pkt_type = hdev->esco_type & ~EDR_ESCO_MASK;
 		break;
 	}
 
-	BT_DBG("after change conn->pkt_type = %x", conn->pkt_type);
 	skb_queue_head_init(&conn->data_q);
 
 	setup_timer(&conn->disc_timer, hci_conn_timeout, (unsigned long)conn);
@@ -394,9 +340,7 @@ EXPORT_SYMBOL(hci_get_route);
 
 /* Create SCO or ACL connection.
  * Device _must_ be locked */
-struct hci_conn *hci_connect(struct hci_dev *hdev, int type,
-					__u16 pkt_type, bdaddr_t *dst,
-					__u8 sec_level, __u8 auth_type)
+struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8 sec_level, __u8 auth_type)
 {
 	struct hci_conn *acl;
 	struct hci_conn *sco;
@@ -404,7 +348,7 @@ struct hci_conn *hci_connect(struct hci_dev *hdev, int type,
 	BT_DBG("%s dst %s", hdev->name, batostr(dst));
 
 	if (!(acl = hci_conn_hash_lookup_ba(hdev, ACL_LINK, dst))) {
-		if (!(acl = hci_conn_add(hdev, ACL_LINK, 0, dst)))
+		if (!(acl = hci_conn_add(hdev, ACL_LINK, dst)))
 			return NULL;
 	}
 
@@ -420,7 +364,7 @@ struct hci_conn *hci_connect(struct hci_dev *hdev, int type,
 		return acl;
 
 	if (!(sco = hci_conn_hash_lookup_ba(hdev, type, dst))) {
-		if (!(sco = hci_conn_add(hdev, type, pkt_type, dst))) {
+		if (!(sco = hci_conn_add(hdev, type, dst))) {
 			hci_conn_put(acl);
 			return NULL;
 		}
@@ -433,9 +377,6 @@ struct hci_conn *hci_connect(struct hci_dev *hdev, int type,
 
 	if (acl->state == BT_CONNECTED &&
 			(sco->state == BT_OPEN || sco->state == BT_CLOSED)) {
-		acl->power_save = 1;
-		hci_conn_enter_active_mode(acl);
-
 		if (lmp_esco_capable(hdev))
 			hci_setup_sync(sco, acl->handle);
 		else
@@ -556,8 +497,7 @@ void hci_conn_enter_active_mode(struct hci_conn *conn)
 	if (test_bit(HCI_RAW, &hdev->flags))
 		return;
 
-	if (conn->mode != HCI_CM_SNIFF ||
-		(((conn->dev_class[1] & 0x1f) == 0x05) && (!conn->power_save)))
+	if (conn->mode != HCI_CM_SNIFF || !conn->power_save)
 		goto timer;
 
 	if (!test_and_set_bit(HCI_CONN_MODE_CHANGE_PEND, &conn->pend)) {
@@ -696,15 +636,6 @@ int hci_get_conn_list(void __user *arg)
 		(ci + n)->out   = c->out;
 		(ci + n)->state = c->state;
 		(ci + n)->link_mode = c->link_mode;
-		if (c->type == SCO_LINK) {
-			(ci + n)->mtu = hdev->sco_mtu;
-			(ci + n)->cnt = hdev->sco_cnt;
-			(ci + n)->pkts = hdev->sco_pkts;
-		} else {
-			(ci + n)->mtu = hdev->acl_mtu;
-			(ci + n)->cnt = hdev->acl_cnt;
-			(ci + n)->pkts = hdev->acl_pkts;
-		}
 		if (++n >= req.conn_num)
 			break;
 	}
@@ -741,15 +672,6 @@ int hci_get_conn_info(struct hci_dev *hdev, void __user *arg)
 		ci.out   = conn->out;
 		ci.state = conn->state;
 		ci.link_mode = conn->link_mode;
-		if (req.type == SCO_LINK) {
-			ci.mtu = hdev->sco_mtu;
-			ci.cnt = hdev->sco_cnt;
-			ci.pkts = hdev->sco_pkts;
-		} else {
-			ci.mtu = hdev->acl_mtu;
-			ci.cnt = hdev->acl_cnt;
-			ci.pkts = hdev->acl_pkts;
-		}
 	}
 	hci_dev_unlock_bh(hdev);
 

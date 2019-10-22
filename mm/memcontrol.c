@@ -32,7 +32,6 @@
 #include <linux/rbtree.h>
 #include <linux/slab.h>
 #include <linux/swap.h>
-#include <linux/swapops.h>
 #include <linux/spinlock.h>
 #include <linux/fs.h>
 #include <linux/seq_file.h>
@@ -56,7 +55,6 @@ static int really_do_swap_account __initdata = 1; /* for remember boot option*/
 #define do_swap_account		(0)
 #endif
 
-static DEFINE_MUTEX(memcg_tasklist);	/* can be hold under cgroup_mutex */
 #define SOFTLIMIT_EVENTS_THRESH (1000)
 
 /*
@@ -208,8 +206,10 @@ struct mem_cgroup {
 	*/
 	spinlock_t reclaim_param_lock;
 
+	int	prev_priority;	/* for recording reclaim priority */
+
 	/*
-	 * While reclaiming in a hiearchy, we cache the last child we
+	 * While reclaiming in a hierarchy, we cache the last child we
 	 * reclaimed from.
 	 */
 	int last_scanned_child;
@@ -217,7 +217,7 @@ struct mem_cgroup {
 	 * Should the accounting and control be hierarchical, per subtree?
 	 */
 	bool use_hierarchy;
-	atomic_t	oom_lock;
+	unsigned long	last_oom_jiffies;
 	atomic_t	refcnt;
 
 	unsigned int	swappiness;
@@ -230,24 +230,6 @@ struct mem_cgroup {
 	 */
 	struct mem_cgroup_stat stat;
 };
-
-/* Stuffs for move charges at task migration. */
-/*
- * Types of charges to be moved. "move_charge_at_immitgrate" is treated as a
- * left-shifted bitmap of these types.
- */
-enum move_type {
-	MOVE_CHARGE_TYPE_ANON,	/* private anonymous page and swap of it */
-	NR_MOVE_TYPE,
-};
-
-/* "mc" and its members are protected by cgroup_mutex */
-static struct move_charge_struct {
-	struct mem_cgroup *from;
-	struct mem_cgroup *to;
-	unsigned long precharge;
-	unsigned long moved_charge;
-} mc;
 
 /*
  * Maximum loops in mem_cgroup_hierarchical_reclaim(), used for soft
@@ -299,6 +281,11 @@ static struct mem_cgroup_per_zone *
 mem_cgroup_zoneinfo(struct mem_cgroup *mem, int nid, int zid)
 {
 	return &mem->info.nodeinfo[nid]->zoneinfo[zid];
+}
+
+struct cgroup_subsys_state *mem_cgroup_css(struct mem_cgroup *mem)
+{
+	return &mem->css;
 }
 
 static struct mem_cgroup_per_zone *
@@ -791,6 +778,35 @@ int task_in_mem_cgroup(struct task_struct *task, const struct mem_cgroup *mem)
 	return ret;
 }
 
+/*
+ * prev_priority control...this will be used in memory reclaim path.
+ */
+int mem_cgroup_get_reclaim_priority(struct mem_cgroup *mem)
+{
+	int prev_priority;
+
+	spin_lock(&mem->reclaim_param_lock);
+	prev_priority = mem->prev_priority;
+	spin_unlock(&mem->reclaim_param_lock);
+
+	return prev_priority;
+}
+
+void mem_cgroup_note_reclaim_priority(struct mem_cgroup *mem, int priority)
+{
+	spin_lock(&mem->reclaim_param_lock);
+	if (priority < mem->prev_priority)
+		mem->prev_priority = priority;
+	spin_unlock(&mem->reclaim_param_lock);
+}
+
+void mem_cgroup_record_reclaim_priority(struct mem_cgroup *mem, int priority)
+{
+	spin_lock(&mem->reclaim_param_lock);
+	mem->prev_priority = priority;
+	spin_unlock(&mem->reclaim_param_lock);
+}
+
 static int calc_inactive_ratio(struct mem_cgroup *memcg, unsigned long *present_pages)
 {
 	unsigned long active;
@@ -1062,24 +1078,6 @@ static int mem_cgroup_count_children(struct mem_cgroup *mem)
 }
 
 /*
- * Return the memory (and swap, if configured) limit for a memcg.
- */
-u64 mem_cgroup_get_limit(struct mem_cgroup *memcg)
-{
-	u64 limit;
-	u64 memsw;
-
-	limit = res_counter_read_u64(&memcg->res, RES_LIMIT) +
-			total_swap_pages;
-	memsw = res_counter_read_u64(&memcg->memsw, RES_LIMIT);
-	/*
-	 * If memsw is finite and limits the amount of swap space available
-	 * to this memcg, return that limit.
-	 */
-	return min(limit, memsw);
-}
-
-/*
  * Visit the first child (need not be the first child as per the ordering
  * of the cgroup list, since we track last_scanned_child) of @mem and use
  * that to reclaim free pages from.
@@ -1207,102 +1205,32 @@ static int mem_cgroup_hierarchical_reclaim(struct mem_cgroup *root_mem,
 	return total;
 }
 
-static int mem_cgroup_oom_lock_cb(struct mem_cgroup *mem, void *data)
+bool mem_cgroup_oom_called(struct task_struct *task)
 {
-	int *val = (int *)data;
-	int x;
-	/*
-	 * Logically, we can stop scanning immediately when we find
-	 * a memcg is already locked. But condidering unlock ops and
-	 * creation/removal of memcg, scan-all is simple operation.
-	 */
-	x = atomic_inc_return(&mem->oom_lock);
-	*val = max(x, *val);
-	return 0;
-}
-/*
- * Check OOM-Killer is already running under our hierarchy.
- * If someone is running, return false.
- */
-static bool mem_cgroup_oom_lock(struct mem_cgroup *mem)
-{
-	int lock_count = 0;
+	bool ret = false;
+	struct mem_cgroup *mem;
+	struct mm_struct *mm;
 
-	mem_cgroup_walk_tree(mem, &lock_count, mem_cgroup_oom_lock_cb);
-
-	if (lock_count == 1)
-		return true;
-	return false;
+	rcu_read_lock();
+	mm = task->mm;
+	if (!mm)
+		mm = &init_mm;
+	mem = mem_cgroup_from_task(rcu_dereference(mm->owner));
+	if (mem && time_before(jiffies, mem->last_oom_jiffies + HZ/10))
+		ret = true;
+	rcu_read_unlock();
+	return ret;
 }
 
-static int mem_cgroup_oom_unlock_cb(struct mem_cgroup *mem, void *data)
+static int record_last_oom_cb(struct mem_cgroup *mem, void *data)
 {
-	/*
-	 * When a new child is created while the hierarchy is under oom,
-	 * mem_cgroup_oom_lock() may not be called. We have to use
-	 * atomic_add_unless() here.
-	 */
-	atomic_add_unless(&mem->oom_lock, -1, 0);
+	mem->last_oom_jiffies = jiffies;
 	return 0;
 }
 
-static void mem_cgroup_oom_unlock(struct mem_cgroup *mem)
+static void record_last_oom(struct mem_cgroup *mem)
 {
-	mem_cgroup_walk_tree(mem, NULL,	mem_cgroup_oom_unlock_cb);
-}
-
-static DEFINE_MUTEX(memcg_oom_mutex);
-static DECLARE_WAIT_QUEUE_HEAD(memcg_oom_waitq);
-
-/*
- * try to call OOM killer. returns false if we should exit memory-reclaim loop.
- */
-bool mem_cgroup_handle_oom(struct mem_cgroup *mem, gfp_t mask)
-{
-	DEFINE_WAIT(wait);
-	bool locked;
-
-	/* At first, try to OOM lock hierarchy under mem.*/
-	mutex_lock(&memcg_oom_mutex);
-	locked = mem_cgroup_oom_lock(mem);
-	/*
-	 * Even if signal_pending(), we can't quit charge() loop without
-	 * accounting. So, UNINTERRUPTIBLE is appropriate. But SIGKILL
-	 * under OOM is always welcomed, use TASK_KILLABLE here.
-	 */
-	if (!locked)
-		prepare_to_wait(&memcg_oom_waitq, &wait, TASK_KILLABLE);
-	mutex_unlock(&memcg_oom_mutex);
-
-	if (locked)
-		mem_cgroup_out_of_memory(mem, mask);
-	else {
-		schedule();
-		finish_wait(&memcg_oom_waitq, &wait);
-	}
-	mutex_lock(&memcg_oom_mutex);
-	mem_cgroup_oom_unlock(mem);
-	/*
-	 * Here, we use global waitq .....more fine grained waitq ?
-	 * Assume following hierarchy.
-	 * A/
-	 *   01
-	 *   02
-	 * assume OOM happens both in A and 01 at the same time. Tthey are
-	 * mutually exclusive by lock. (kill in 01 helps A.)
-	 * When we use per memcg waitq, we have to wake up waiters on A and 02
-	 * in addtion to waiters on 01. We use global waitq for avoiding mess.
-	 * It will not be a big problem.
-	 * (And a task may be moved to other groups while it's waiting for OOM.)
-	 */
-	wake_up_all(&memcg_oom_waitq);
-	mutex_unlock(&memcg_oom_mutex);
-
-	if (test_thread_flag(TIF_MEMDIE) || fatal_signal_pending(current))
-		return false;
-	/* Give chance to dying process */
-	schedule_timeout(1);
-	return true;
+	mem_cgroup_walk_tree(mem, NULL, record_last_oom_cb);
 }
 
 /*
@@ -1481,14 +1409,11 @@ static int __mem_cgroup_try_charge(struct mm_struct *mm,
 	struct res_counter *fail_res;
 	int csize = CHARGE_SIZE;
 
-	/*
-	 * Unlike gloval-vm's OOM-kill, we're not in memory shortage
-	 * in system level. So, allow to go ahead dying process in addition to
-	 * MEMDIE process.
-	 */
-	if (unlikely(test_thread_flag(TIF_MEMDIE)
-		     || fatal_signal_pending(current)))
-		goto bypass;
+	if (unlikely(test_thread_flag(TIF_MEMDIE))) {
+		/* Don't account this! */
+		*memcg = NULL;
+		return 0;
+	}
 
 	/*
 	 * We always charge the cgroup the mm_struct belongs to.
@@ -1559,15 +1484,11 @@ static int __mem_cgroup_try_charge(struct mm_struct *mm,
 			continue;
 
 		if (!nr_retries--) {
-			if (!oom)
-				goto nomem;
-			if (mem_cgroup_handle_oom(mem_over_limit, gfp_mask)) {
-				nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
-				continue;
+			if (oom) {
+				mem_cgroup_out_of_memory(mem_over_limit, gfp_mask);
+				record_last_oom(mem_over_limit);
 			}
-			/* When we reach here, current task is dying .*/
-			css_put(&mem->css);
-			goto bypass;
+			goto nomem;
 		}
 	}
 	if (csize > PAGE_SIZE)
@@ -1584,9 +1505,6 @@ done:
 nomem:
 	css_put(&mem->css);
 	return -ENOMEM;
-bypass:
-	*memcg = NULL;
-	return 0;
 }
 
 /*
@@ -1594,23 +1512,14 @@ bypass:
  * This function is for that and do uncharge, put css's refcnt.
  * gotten by try_charge().
  */
-static void __mem_cgroup_cancel_charge(struct mem_cgroup *mem,
-							unsigned long count)
-{
-	if (!mem_cgroup_is_root(mem)) {
-		res_counter_uncharge(&mem->res, PAGE_SIZE * count);
-		if (do_swap_account)
-			res_counter_uncharge(&mem->memsw, PAGE_SIZE * count);
-		VM_BUG_ON(test_bit(CSS_ROOT, &mem->css.flags));
-		WARN_ON_ONCE(count > INT_MAX);
-		__css_put(&mem->css, (int)count);
-	}
-	/* we don't need css_put for root */
-}
-
 static void mem_cgroup_cancel_charge(struct mem_cgroup *mem)
 {
-	__mem_cgroup_cancel_charge(mem, 1);
+	if (!mem_cgroup_is_root(mem)) {
+		res_counter_uncharge(&mem->res, PAGE_SIZE);
+		if (do_swap_account)
+			res_counter_uncharge(&mem->memsw, PAGE_SIZE);
+	}
+	css_put(&mem->css);
 }
 
 /*
@@ -1632,17 +1541,14 @@ static struct mem_cgroup *mem_cgroup_lookup(unsigned short id)
 	return container_of(css, struct mem_cgroup, css);
 }
 
-static struct mem_cgroup *try_get_mem_cgroup_from_swapcache(struct page *page)
+struct mem_cgroup *try_get_mem_cgroup_from_page(struct page *page)
 {
-	struct mem_cgroup *mem;
+	struct mem_cgroup *mem = NULL;
 	struct page_cgroup *pc;
 	unsigned short id;
 	swp_entry_t ent;
 
 	VM_BUG_ON(!PageLocked(page));
-
-	if (!PageSwapCache(page))
-		return NULL;
 
 	pc = lookup_page_cgroup(page);
 	lock_page_cgroup(pc);
@@ -1650,7 +1556,7 @@ static struct mem_cgroup *try_get_mem_cgroup_from_swapcache(struct page *page)
 		mem = pc->mem_cgroup;
 		if (mem && !css_tryget(&mem->css))
 			mem = NULL;
-	} else {
+	} else if (PageSwapCache(page)) {
 		ent.val = page_private(page);
 		id = lookup_swap_cgroup(ent);
 		rcu_read_lock();
@@ -1716,20 +1622,17 @@ static void __mem_cgroup_commit_charge(struct mem_cgroup *mem,
  * @pc:	page_cgroup of the page.
  * @from: mem_cgroup which the page is moved from.
  * @to:	mem_cgroup which the page is moved to. @from != @to.
- * @uncharge: whether we should call uncharge and css_put against @from.
  *
  * The caller must confirm following.
  * - page is not on LRU (isolate_page() is useful.)
  * - the pc is locked, used, and ->mem_cgroup points to @from.
  *
- * This function doesn't do "charge" nor css_get to new cgroup. It should be
- * done by a caller(__mem_cgroup_try_charge would be usefull). If @uncharge is
- * true, this function does "uncharge" from old cgroup, but it doesn't if
- * @uncharge is false, so a caller should do "uncharge".
+ * This function does "uncharge" from old cgroup but doesn't do "charge" to
+ * new cgroup. It should be done by a caller.
  */
 
 static void __mem_cgroup_move_account(struct page_cgroup *pc,
-	struct mem_cgroup *from, struct mem_cgroup *to, bool uncharge)
+	struct mem_cgroup *from, struct mem_cgroup *to)
 {
 	struct page *page;
 	int cpu;
@@ -1741,6 +1644,10 @@ static void __mem_cgroup_move_account(struct page_cgroup *pc,
 	VM_BUG_ON(!PageCgroupLocked(pc));
 	VM_BUG_ON(!PageCgroupUsed(pc));
 	VM_BUG_ON(pc->mem_cgroup != from);
+
+	if (!mem_cgroup_is_root(from))
+		res_counter_uncharge(&from->res, PAGE_SIZE);
+	mem_cgroup_charge_statistics(from, pc, false);
 
 	page = pc->page;
 	if (page_mapped(page) && !PageAnon(page)) {
@@ -1757,12 +1664,12 @@ static void __mem_cgroup_move_account(struct page_cgroup *pc,
 		__mem_cgroup_stat_add_safe(cpustat, MEM_CGROUP_STAT_FILE_MAPPED,
 						1);
 	}
-	mem_cgroup_charge_statistics(from, pc, false);
-	if (uncharge)
-		/* This is not "cancel", but cancel_charge does all we need. */
-		mem_cgroup_cancel_charge(from);
 
-	/* caller should have done css_get */
+	if (do_swap_account && !mem_cgroup_is_root(from))
+		res_counter_uncharge(&from->memsw, PAGE_SIZE);
+	css_put(&from->css);
+
+	css_get(&to->css);
 	pc->mem_cgroup = to;
 	mem_cgroup_charge_statistics(to, pc, true);
 	/*
@@ -1778,12 +1685,12 @@ static void __mem_cgroup_move_account(struct page_cgroup *pc,
  * __mem_cgroup_move_account()
  */
 static int mem_cgroup_move_account(struct page_cgroup *pc,
-		struct mem_cgroup *from, struct mem_cgroup *to, bool uncharge)
+				struct mem_cgroup *from, struct mem_cgroup *to)
 {
 	int ret = -EINVAL;
 	lock_page_cgroup(pc);
 	if (PageCgroupUsed(pc) && pc->mem_cgroup == from) {
-		__mem_cgroup_move_account(pc, from, to, uncharge);
+		__mem_cgroup_move_account(pc, from, to);
 		ret = 0;
 	}
 	unlock_page_cgroup(pc);
@@ -1819,9 +1726,11 @@ static int mem_cgroup_move_parent(struct page_cgroup *pc,
 	if (ret || !parent)
 		goto put_back;
 
-	ret = mem_cgroup_move_account(pc, child, parent, true);
-	if (ret)
-		mem_cgroup_cancel_charge(parent);
+	ret = mem_cgroup_move_account(pc, child, parent);
+	if (!ret)
+		css_put(&parent->css);	/* drop extra refcnt by try_charge() */
+	else
+		mem_cgroup_cancel_charge(parent);	/* does css_put */
 put_back:
 	putback_lru_page(page);
 put:
@@ -1944,7 +1853,7 @@ int mem_cgroup_cache_charge(struct page *page, struct mm_struct *mm,
 /*
  * While swap-in, try_charge -> commit or cancel, the page is locked.
  * And when try_charge() successfully returns, one refcnt to memcg without
- * struct page_cgroup is aquired. This refcnt will be cumsumed by
+ * struct page_cgroup is acquired. This refcnt will be consumed by
  * "commit()" or removed by "cancel()"
  */
 int mem_cgroup_try_charge_swapin(struct mm_struct *mm,
@@ -1961,12 +1870,13 @@ int mem_cgroup_try_charge_swapin(struct mm_struct *mm,
 		goto charge_cur_mm;
 	/*
 	 * A racing thread's fault, or swapoff, may have already updated
-	 * the pte, and even removed page from swap cache: return success
-	 * to go on to do_swap_page()'s pte_same() test, which should fail.
+	 * the pte, and even removed page from swap cache: in those cases
+	 * do_swap_page()'s pte_same() test will fail; but there's also a
+	 * KSM case which does need to charge the page.
 	 */
 	if (!PageSwapCache(page))
-		return 0;
-	mem = try_get_mem_cgroup_from_swapcache(page);
+		goto charge_cur_mm;
+	mem = try_get_mem_cgroup_from_page(page);
 	if (!mem)
 		goto charge_cur_mm;
 	*ptr = mem;
@@ -2281,54 +2191,6 @@ void mem_cgroup_uncharge_swap(swp_entry_t ent)
 		mem_cgroup_put(memcg);
 	}
 	rcu_read_unlock();
-}
-
-/**
- * mem_cgroup_move_swap_account - move swap charge and swap_cgroup's record.
- * @entry: swap entry to be moved
- * @from:  mem_cgroup which the entry is moved from
- * @to:  mem_cgroup which the entry is moved to
- *
- * It succeeds only when the swap_cgroup's record for this entry is the same
- * as the mem_cgroup's id of @from.
- *
- * Returns 0 on success, -EINVAL on failure.
- *
- * The caller must have charged to @to, IOW, called res_counter_charge() about
- * both res and memsw, and called css_get().
- */
-static int mem_cgroup_move_swap_account(swp_entry_t entry,
-				struct mem_cgroup *from, struct mem_cgroup *to)
-{
-	unsigned short old_id, new_id;
-
-	old_id = css_id(&from->css);
-	new_id = css_id(&to->css);
-
-	if (swap_cgroup_cmpxchg(entry, old_id, new_id) == old_id) {
-		if (!mem_cgroup_is_root(from))
-			res_counter_uncharge(&from->memsw, PAGE_SIZE);
-		mem_cgroup_swap_statistics(from, false);
-		mem_cgroup_put(from);
-		/*
-		 * we charged both to->res and to->memsw, so we should uncharge
-		 * to->res.
-		 */
-		if (!mem_cgroup_is_root(to))
-			res_counter_uncharge(&to->res, PAGE_SIZE);
-		mem_cgroup_swap_statistics(to, true);
-		mem_cgroup_get(to);
-		css_put(&to->css);
-
-		return 0;
-	}
-	return -EINVAL;
-}
-#else
-static inline int mem_cgroup_move_swap_account(swp_entry_t entry,
-				struct mem_cgroup *from, struct mem_cgroup *to)
-{
-	return -EINVAL;
 }
 #endif
 
@@ -2683,7 +2545,7 @@ static int mem_cgroup_force_empty_list(struct mem_cgroup *mem,
 		pc = list_entry(list->prev, struct page_cgroup, lru);
 		if (busy == pc) {
 			list_move(&pc->lru, list);
-			busy = NULL;
+			busy = 0;
 			spin_unlock_irqrestore(&zone->lru_lock, flags);
 			continue;
 		}
@@ -2724,7 +2586,7 @@ static int mem_cgroup_force_empty(struct mem_cgroup *mem, bool free_all)
 	if (free_all)
 		goto try_to_free;
 move_account:
-	do {
+	while (mem->res.usage > 0) {
 		ret = -EBUSY;
 		if (cgroup_task_count(cgrp) || !list_empty(&cgrp->children))
 			goto out;
@@ -2752,8 +2614,8 @@ move_account:
 		if (ret == -ENOMEM)
 			goto try_to_free;
 		cond_resched();
-	/* "ret" should also be checked to ensure all lists are empty. */
-	} while (mem->res.usage > 0 || ret);
+	}
+	ret = 0;
 out:
 	css_put(&mem->css);
 	return ret;
@@ -2786,7 +2648,10 @@ try_to_free:
 	}
 	lru_add_drain();
 	/* try move_account...there may be some *locked* pages. */
-	goto move_account;
+	if (mem->res.usage)
+		goto move_account;
+	ret = 0;
+	goto out;
 }
 
 int mem_cgroup_force_empty_write(struct cgroup *cont, unsigned int event)
@@ -2813,7 +2678,7 @@ static int mem_cgroup_hierarchy_write(struct cgroup *cont, struct cftype *cft,
 
 	cgroup_lock();
 	/*
-	 * If parent's use_hiearchy is set, we can't make any modifications
+	 * If parent's use_hierarchy is set, we can't make any modifications
 	 * in the child subtrees. If it is unset, then the change can
 	 * occur, provided the current cgroup has no children.
 	 *
@@ -3003,38 +2868,6 @@ static int mem_cgroup_reset(struct cgroup *cont, unsigned int event)
 	return 0;
 }
 
-static u64 mem_cgroup_move_charge_read(struct cgroup *cgrp,
-					struct cftype *cft)
-{
-	return mem_cgroup_from_cont(cgrp)->move_charge_at_immigrate;
-}
-
-#ifdef CONFIG_MMU
-static int mem_cgroup_move_charge_write(struct cgroup *cgrp,
-					struct cftype *cft, u64 val)
-{
-	struct mem_cgroup *mem = mem_cgroup_from_cont(cgrp);
-
-	if (val >= (1 << NR_MOVE_TYPE))
-		return -EINVAL;
-	/*
-	 * We check this value several times in both in can_attach() and
-	 * attach(), so we need cgroup lock to prevent this value from being
-	 * inconsistent.
-	 */
-	cgroup_lock();
-	mem->move_charge_at_immigrate = val;
-	cgroup_unlock();
-
-	return 0;
-}
-#else
-static int mem_cgroup_move_charge_write(struct cgroup *cgrp,
-					struct cftype *cft, u64 val)
-{
-	return -ENOSYS;
-}
-#endif
 
 /* For read statistics */
 enum {
@@ -3551,408 +3384,16 @@ static int mem_cgroup_populate(struct cgroup_subsys *ss,
 	return ret;
 }
 
-#ifdef CONFIG_MMU
-/* Handlers for move charge at task migration. */
-#define PRECHARGE_COUNT_AT_ONCE	256
-static int mem_cgroup_do_precharge(unsigned long count)
-{
-	int ret = 0;
-	int batch_count = PRECHARGE_COUNT_AT_ONCE;
-	struct mem_cgroup *mem = mc.to;
-
-	if (mem_cgroup_is_root(mem)) {
-		mc.precharge += count;
-		/* we don't need css_get for root */
-		return ret;
-	}
-	/* try to charge at once */
-	if (count > 1) {
-		struct res_counter *dummy;
-		/*
-		 * "mem" cannot be under rmdir() because we've already checked
-		 * by cgroup_lock_live_cgroup() that it is not removed and we
-		 * are still under the same cgroup_mutex. So we can postpone
-		 * css_get().
-		 */
-		if (res_counter_charge(&mem->res, PAGE_SIZE * count, &dummy))
-			goto one_by_one;
-		if (do_swap_account && res_counter_charge(&mem->memsw,
-						PAGE_SIZE * count, &dummy)) {
-			res_counter_uncharge(&mem->res, PAGE_SIZE * count);
-			goto one_by_one;
-		}
-		mc.precharge += count;
-		VM_BUG_ON(test_bit(CSS_ROOT, &mem->css.flags));
-		WARN_ON_ONCE(count > INT_MAX);
-		__css_get(&mem->css, (int)count);
-		return ret;
-	}
-one_by_one:
-	/* fall back to one by one charge */
-	while (count--) {
-		if (signal_pending(current)) {
-			ret = -EINTR;
-			break;
-		}
-		if (!batch_count--) {
-			batch_count = PRECHARGE_COUNT_AT_ONCE;
-			cond_resched();
-		}
-		ret = __mem_cgroup_try_charge(NULL, GFP_KERNEL, &mem,
-								false, NULL);
-		if (ret || !mem)
-			/* mem_cgroup_clear_mc() will do uncharge later */
-			return -ENOMEM;
-		mc.precharge++;
-	}
-	return ret;
-}
-#else	/* !CONFIG_MMU */
-static int mem_cgroup_can_attach(struct cgroup_subsys *ss,
-				struct cgroup *cgroup,
-				struct task_struct *p,
-				bool threadgroup)
-{
-	return 0;
-}
-static void mem_cgroup_cancel_attach(struct cgroup_subsys *ss,
-				struct cgroup *cgroup,
-				struct task_struct *p,
-				bool threadgroup)
-{
-}
 static void mem_cgroup_move_task(struct cgroup_subsys *ss,
 				struct cgroup *cont,
 				struct cgroup *old_cont,
 				struct task_struct *p,
 				bool threadgroup)
 {
-}
-#endif
-
-/**
- * is_target_pte_for_mc - check a pte whether it is valid for move charge
- * @vma: the vma the pte to be checked belongs
- * @addr: the address corresponding to the pte to be checked
- * @ptent: the pte to be checked
- * @target: the pointer the target page or swap ent will be stored(can be NULL)
- *
- * Returns
- *   0(MC_TARGET_NONE): if the pte is not a target for move charge.
- *   1(MC_TARGET_PAGE): if the page corresponding to this pte is a target for
- *     move charge. if @target is not NULL, the page is stored in target->page
- *     with extra refcnt got(Callers should handle it).
- *   2(MC_TARGET_SWAP): if the swap entry corresponding to this pte is a
- *     target for charge migration. if @target is not NULL, the entry is stored
- *     in target->ent.
- *
- * Called with pte lock held.
- */
-union mc_target {
-	struct page	*page;
-	swp_entry_t	ent;
-};
-
-enum mc_target_type {
-	MC_TARGET_NONE,	/* not used */
-	MC_TARGET_PAGE,
-	MC_TARGET_SWAP,
-};
-
-static int is_target_pte_for_mc(struct vm_area_struct *vma,
-		unsigned long addr, pte_t ptent, union mc_target *target)
-{
-	struct page *page = NULL;
-	struct page_cgroup *pc;
-	int ret = 0;
-	swp_entry_t ent = { .val = 0 };
-	int usage_count = 0;
-	bool move_anon = test_bit(MOVE_CHARGE_TYPE_ANON,
-					&mc.to->move_charge_at_immigrate);
-
-	if (!pte_present(ptent)) {
-		/* TODO: handle swap of shmes/tmpfs */
-		if (pte_none(ptent) || pte_file(ptent))
-			return 0;
-		else if (is_swap_pte(ptent)) {
-			ent = pte_to_swp_entry(ptent);
-			if (!move_anon || non_swap_entry(ent))
-				return 0;
-			usage_count = mem_cgroup_count_swap_user(ent, &page);
-		}
-	} else {
-		page = vm_normal_page(vma, addr, ptent);
-		if (!page || !page_mapped(page))
-			return 0;
-		/*
-		 * TODO: We don't move charges of file(including shmem/tmpfs)
-		 * pages for now.
-		 */
-		if (!move_anon || !PageAnon(page))
-			return 0;
-		if (!get_page_unless_zero(page))
-			return 0;
-		usage_count = page_mapcount(page);
-	}
-	if (usage_count > 1) {
-		/*
-		 * TODO: We don't move charges of shared(used by multiple
-		 * processes) pages for now.
-		 */
-		if (page)
-			put_page(page);
-		return 0;
-	}
-	if (page) {
-		pc = lookup_page_cgroup(page);
-		/*
-		 * Do only loose check w/o page_cgroup lock.
-		 * mem_cgroup_move_account() checks the pc is valid or not under
-		 * the lock.
-		 */
-		if (PageCgroupUsed(pc) && pc->mem_cgroup == mc.from) {
-			ret = MC_TARGET_PAGE;
-			if (target)
-				target->page = page;
-		}
-		if (!ret || !target)
-			put_page(page);
-	}
-	/* throught */
-	if (ent.val && do_swap_account && !ret &&
-			css_id(&mc.from->css) == lookup_swap_cgroup(ent)) {
-		ret = MC_TARGET_SWAP;
-		if (target)
-			target->ent = ent;
-	}
-	return ret;
-}
-
-static int mem_cgroup_count_precharge_pte_range(pmd_t *pmd,
-					unsigned long addr, unsigned long end,
-					struct mm_walk *walk)
-{
-	struct vm_area_struct *vma = walk->private;
-	pte_t *pte;
-	spinlock_t *ptl;
-
-	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
-	for (; addr != end; pte++, addr += PAGE_SIZE)
-		if (is_target_pte_for_mc(vma, addr, *pte, NULL))
-			mc.precharge++;	/* increment precharge temporarily */
-	pte_unmap_unlock(pte - 1, ptl);
-	cond_resched();
-
-	return 0;
-}
-
-static unsigned long mem_cgroup_count_precharge(struct mm_struct *mm)
-{
-	unsigned long precharge;
-	struct vm_area_struct *vma;
-
-	down_read(&mm->mmap_sem);
-	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		struct mm_walk mem_cgroup_count_precharge_walk = {
-			.pmd_entry = mem_cgroup_count_precharge_pte_range,
-			.mm = mm,
-			.private = vma,
-		};
-		if (is_vm_hugetlb_page(vma))
-			continue;
-		/* TODO: We don't move charges of shmem/tmpfs pages for now. */
-		if (vma->vm_flags & VM_SHARED)
-			continue;
-		walk_page_range(vma->vm_start, vma->vm_end,
-					&mem_cgroup_count_precharge_walk);
-	}
-	up_read(&mm->mmap_sem);
-
-	precharge = mc.precharge;
-	mc.precharge = 0;
-
-	return precharge;
-}
-
-static int mem_cgroup_precharge_mc(struct mm_struct *mm)
-{
-	return mem_cgroup_do_precharge(mem_cgroup_count_precharge(mm));
-}
-
-static void mem_cgroup_clear_mc(void)
-{
-	/* we must uncharge all the leftover precharges from mc.to */
-	if (mc.precharge) {
-		__mem_cgroup_cancel_charge(mc.to, mc.precharge);
-		mc.precharge = 0;
-	}
-	/*
-	 * we didn't uncharge from mc.from at mem_cgroup_move_account(), so
-	 * we must uncharge here.
-	 */
-	if (mc.moved_charge) {
-		__mem_cgroup_cancel_charge(mc.from, mc.moved_charge);
-		mc.moved_charge = 0;
-	}
-	mc.from = NULL;
-	mc.to = NULL;
-	mc.moving_task = NULL;
-	wake_up_all(&mc.waitq);
-}
-
-static int mem_cgroup_can_attach(struct cgroup_subsys *ss,
-				struct cgroup *cgroup,
-				struct task_struct *p,
-				bool threadgroup)
-{
-	int ret = 0;
-	struct mem_cgroup *mem = mem_cgroup_from_cont(cgroup);
-
-	if (mem->move_charge_at_immigrate) {
-		struct mm_struct *mm;
-		struct mem_cgroup *from = mem_cgroup_from_task(p);
-
-		VM_BUG_ON(from == mem);
-
-		mm = get_task_mm(p);
-		if (!mm)
-			return 0;
-		/* We move charges only when we move a owner of the mm */
-		if (mm->owner == p) {
-			VM_BUG_ON(mc.from);
-			VM_BUG_ON(mc.to);
-			VM_BUG_ON(mc.precharge);
-			VM_BUG_ON(mc.moved_charge);
-
-			mc.from = from;
-			mc.to = mem;
-			mc.precharge = 0;
-			mc.moved_charge = 0;
-
-			ret = mem_cgroup_precharge_mc(mm);
-			if (ret)
-				mem_cgroup_clear_mc();
-		}
-		mmput(mm);
-	}
-	return ret;
-}
-
-static void mem_cgroup_cancel_attach(struct cgroup_subsys *ss,
-				struct cgroup *cgroup,
-				struct task_struct *p,
-				bool threadgroup)
-{
-	mem_cgroup_clear_mc();
-}
-
-static int mem_cgroup_move_charge_pte_range(pmd_t *pmd,
-				unsigned long addr, unsigned long end,
-				struct mm_walk *walk)
-{
-	int ret = 0;
-	struct vm_area_struct *vma = walk->private;
-	pte_t *pte;
-	spinlock_t *ptl;
-
-retry:
-	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
-	for (; addr != end; addr += PAGE_SIZE) {
-		pte_t ptent = *(pte++);
-		union mc_target target;
-		int type;
-		struct page *page;
-		struct page_cgroup *pc;
-		swp_entry_t ent;
-
-		if (!mc.precharge)
-			break;
-
-		type = is_target_pte_for_mc(vma, addr, ptent, &target);
-		switch (type) {
-		case MC_TARGET_PAGE:
-			page = target.page;
-			if (isolate_lru_page(page))
-				goto put;
-			pc = lookup_page_cgroup(page);
-			if (!mem_cgroup_move_account(pc,
-						mc.from, mc.to, false)) {
-				mc.precharge--;
-				/* we uncharge from mc.from later. */
-				mc.moved_charge++;
-			}
-			putback_lru_page(page);
-put:			/* is_target_pte_for_mc() gets the page */
-			put_page(page);
-			break;
-		case MC_TARGET_SWAP:
-			ent = target.ent;
-			if (!mem_cgroup_move_swap_account(ent, mc.from, mc.to))
-				mc.precharge--;
-			break;
-		default:
-			break;
-		}
-	}
-	pte_unmap_unlock(pte - 1, ptl);
-	cond_resched();
-
-	if (addr != end) {
-		/*
-		 * We have consumed all precharges we got in can_attach().
-		 * We try charge one by one, but don't do any additional
-		 * charges to mc.to if we have failed in charge once in attach()
-		 * phase.
-		 */
-		ret = mem_cgroup_do_precharge(1);
-		if (!ret)
-			goto retry;
-	}
-
-	return ret;
-}
-
-static void mem_cgroup_move_charge(struct mm_struct *mm)
-{
-	struct vm_area_struct *vma;
-
-	lru_add_drain_all();
-	down_read(&mm->mmap_sem);
-	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		int ret;
-		struct mm_walk mem_cgroup_move_charge_walk = {
-			.pmd_entry = mem_cgroup_move_charge_pte_range,
-			.mm = mm,
-			.private = vma,
-		};
-		if (is_vm_hugetlb_page(vma))
-			continue;
-		/* TODO: We don't move charges of shmem/tmpfs pages for now. */
-			continue;
-		ret = walk_page_range(vma->vm_start, vma->vm_end,
-						&mem_cgroup_move_charge_walk);
-		if (ret)
-			/*
-			 * means we have consumed all precharges and failed in
-			 * doing additional charge. Just abandon here.
-			 */
-			break;
-	}
-	up_read(&mm->mmap_sem);
-}
-
-static void mem_cgroup_move_task(struct cgroup_subsys *ss,
-				struct cgroup *cont,
-				struct cgroup *old_cont,
-				struct task_struct *p,
-				bool threadgroup)
-{
-	mutex_lock(&memcg_tasklist);
 	/*
 	 * FIXME: It's better to move charges of this process from old
 	 * memcg to new memcg. But it's just on TODO-List now.
 	 */
-	mutex_unlock(&memcg_tasklist);
 }
 
 struct cgroup_subsys mem_cgroup_subsys = {

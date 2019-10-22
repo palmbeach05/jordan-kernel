@@ -348,7 +348,7 @@ int dma_needs_bounce(struct device *dev, dma_addr_t dma_addr, size_t size)
  * This is really ugly and we need a better way of specifying
  * DMA-capable regions of memory.
  */
-void __init ixp4xx_adjust_zones(unsigned long *zone_size,
+void __init ixp4xx_adjust_zones(int node, unsigned long *zone_size,
 	unsigned long *zhole_size)
 {
 	unsigned int sz = SZ_64M >> PAGE_SHIFT;
@@ -356,7 +356,7 @@ void __init ixp4xx_adjust_zones(unsigned long *zone_size,
 	/*
 	 * Only adjust if > 64M on current system
 	 */
-	if (zone_size[0] <= sz)
+	if (node || (zone_size[0] <= sz))
 		return;
 
 	zone_size[1] = zone_size[0] - sz;
@@ -481,11 +481,7 @@ int ixp4xx_setup(int nr, struct pci_sys_data *sys)
 
 	res[1].name = "PCI Memory Space";
 	res[1].start = PCIBIOS_MIN_MEM;
-#ifndef CONFIG_IXP4XX_INDIRECT_PCI
-	res[1].end = 0x4bffffff;
-#else
-	res[1].end = 0x4fffffff;
-#endif
+	res[1].end = PCIBIOS_MAX_MEM;
 	res[1].flags = IORESOURCE_MEM;
 
 	request_resource(&ioport_resource, &res[0]);

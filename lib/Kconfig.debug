@@ -35,13 +35,6 @@ config FRAME_WARN
 	  Setting this too low will cause a lot of warnings.
 	  Setting it to 0 disables the warning.
 	  Requires gcc 4.4
-config MUDFLAP
-	bool "Enable mudflap to check slab write after free"
-	depends on DEBUG_SLAB_LEAK || SLUB_DEBUG_ON
-	help
-	  This uses mudflap which introduced by gcc4 to check slab corruption
-	  which is caused by writing after free.
-	  This is smaller and faster than kmemcheck.
 
 config MAGIC_SYSRQ
 	bool "Magic SysRq key"
@@ -112,7 +105,7 @@ config DEBUG_SECTION_MISMATCH
 	bool "Enable full Section mismatch analysis"
 	depends on UNDEFINED
 	# This option is on purpose disabled for now.
-	# It will be enabled when we are down to a resonable number
+	# It will be enabled when we are down to a reasonable number
 	# of section mismatch warnings (< 10 for an allyesconfig build)
 	help
 	  The section mismatch analysis checks if there are illegal
@@ -305,6 +298,14 @@ config DEBUG_OBJECTS_TIMERS
 	  timer routines to track the life time of timer objects and
 	  validate the timer operations.
 
+config DEBUG_OBJECTS_WORK
+	bool "Debug work objects"
+	depends on DEBUG_OBJECTS
+	help
+	  If you say Y here, additional code will be inserted into the
+	  work queue routines to track the life time of work objects and
+	  validate the work operations.
+
 config DEBUG_OBJECTS_ENABLE_DEFAULT
 	int "debug_objects bootup default value (0-1)"
         range 0 1
@@ -320,14 +321,6 @@ config DEBUG_SLAB
 	  Say Y here to have the kernel do limited verification on memory
 	  allocation as well as poisoning memory on free to catch use of freed
 	  memory. This can make kmalloc/kfree-intensive workloads much slower.
-
-config DEBUG_SLAB_KMALLOC_SINGLE_PAGE
-	bool "Tune kmalloc DEBUG_SLAB cache sizes"
-	depends on DEBUG_SLAB
-	help
-	  Alter the size of the kmalloc caches to ensure that slabs use a
-	  single page whenever possible. This reduces the impact of memory
-	  fragmentation when DEBUG_SLAB is enabled.
 
 config DEBUG_SLAB_LEAK
 	bool "Memory leak debugging"
@@ -367,6 +360,7 @@ config DEBUG_KMEMLEAK
 	select DEBUG_FS if SYSFS
 	select STACKTRACE if STACKTRACE_SUPPORT
 	select KALLSYMS
+	select CRC32
 	help
 	  Say Y here if you want to enable the memory leak
 	  detector. The memory allocation/freeing is traced in a way
@@ -449,19 +443,11 @@ config DEBUG_MUTEXES
 	 This feature allows mutex semantics violations to be detected and
 	 reported.
 
-config DEBUG_PSRWLOCK
-	bool "Priority-Sifting Reader-Writer Locks: basic checks"
-	depends on DEBUG_KERNEL
-	help
-	 This feature allows psrwlock semantics violations to be detected and
-	 reported.
-
 config DEBUG_LOCK_ALLOC
 	bool "Lock debugging: detect incorrect freeing of live locks"
 	depends on DEBUG_KERNEL && TRACE_IRQFLAGS_SUPPORT && STACKTRACE_SUPPORT && LOCKDEP_SUPPORT
 	select DEBUG_SPINLOCK
 	select DEBUG_MUTEXES
-	select DEBUG_PSRWLOCK
 	select LOCKDEP
 	help
 	 This feature will check whether any held lock (spinlock, rwlock,
@@ -477,7 +463,6 @@ config PROVE_LOCKING
 	select LOCKDEP
 	select DEBUG_SPINLOCK
 	select DEBUG_MUTEXES
-	select DEBUG_PSRWLOCK
 	select DEBUG_LOCK_ALLOC
 	default n
 	help
@@ -528,7 +513,6 @@ config LOCK_STAT
 	select LOCKDEP
 	select DEBUG_SPINLOCK
 	select DEBUG_MUTEXES
-	select DEBUG_PSRWLOCK
 	select DEBUG_LOCK_ALLOC
 	default n
 	help
@@ -570,7 +554,7 @@ config DEBUG_LOCKING_API_SELFTESTS
 	  mutexes and rwsems.
 
 config STACKTRACE
-	bool "Show stack traces in /proc/pid/stack"
+	bool
 	depends on STACKTRACE_SUPPORT
 
 config DEBUG_KOBJECT
@@ -592,7 +576,7 @@ config DEBUG_BUGVERBOSE
 	depends on BUG
 	depends on ARM || AVR32 || M32R || M68K || SPARC32 || SPARC64 || \
 		   FRV || SUPERH || GENERIC_BUG || BLACKFIN || MN10300
-	default !EMBEDDED
+	default y
 	help
 	  Say Y here to make BUG() panics output the file name and line number
 	  of the BUG call as well as the EIP and oops trace.  This aids
@@ -666,15 +650,6 @@ config DEBUG_LIST
 	  walking routines.
 
 	  If unsure, say N.
-
-config DEBUG_RCU_HEAD
-	bool "Debug RCU callbacks"
-	depends on DEBUG_KERNEL
-	depends on TREE_RCU
-	help
-	  Enable this to turn on debugging of RCU list heads (call_rcu() usage).
-	  Seems to find problems more quickly with stress-tests in single-cpu
-	  mode.
 
 config DEBUG_SG
 	bool "Debug SG table operations"
@@ -784,7 +759,7 @@ config RCU_TORTURE_TEST_RUNNABLE
 config RCU_CPU_STALL_DETECTOR
 	bool "Check for stalled CPUs delaying RCU grace periods"
 	depends on TREE_RCU || TREE_PREEMPT_RCU
-	default n
+	default y
 	help
 	  This option causes RCU to printk information on which
 	  CPUs are delaying the current grace period, but only when
@@ -931,14 +906,6 @@ config FAULT_INJECTION_STACKTRACE_FILTER
 	help
 	  Provide stacktrace filter for fault-injection capabilities
 
-config HAVE_PSRWLOCK_ASM_CALL
-	def_bool n
-
-config PSRWLOCK_LATENCY_TEST
-	boolean "Testing API for psrwlock latency test"
-	depends on HAVE_GET_CYCLES
-	help
-
 config LATENCYTOP
 	bool "Latency measuring infrastructure"
 	select FRAME_POINTER if !MIPS && !PPC && !S390
@@ -954,7 +921,7 @@ config LATENCYTOP
 
 config SYSCTL_SYSCALL_CHECK
 	bool "Sysctl checks"
-	depends on SYSCTL_SYSCALL
+	depends on SYSCTL
 	---help---
 	  sys_sysctl uses binary paths that have been found challenging
 	  to properly maintain and use. This enables checks that help
@@ -1092,6 +1059,3 @@ source "samples/Kconfig"
 source "lib/Kconfig.kgdb"
 
 source "lib/Kconfig.kmemcheck"
-
-config TEST_KSTRTOX
-	tristate "Test kstrto*() family of functions at runtime"

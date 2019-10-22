@@ -801,14 +801,14 @@ static int lance_open(struct net_device *dev)
 	netif_start_queue(dev);
 
 	/* Associate IRQ with lance_interrupt */
-	if (request_irq(dev->irq, &lance_interrupt, 0, "lance", dev)) {
+	if (request_irq(dev->irq, lance_interrupt, 0, "lance", dev)) {
 		printk("%s: Can't get IRQ %d\n", dev->name, dev->irq);
 		return -EAGAIN;
 	}
 	if (lp->dma_irq >= 0) {
 		unsigned long flags;
 
-		if (request_irq(lp->dma_irq, &lance_dma_merr_int, 0,
+		if (request_irq(lp->dma_irq, lance_dma_merr_int, 0,
 				"lance error", dev)) {
 			free_irq(dev->irq, dev);
 			printk("%s: Can't get DMA IRQ %d\n", dev->name,
@@ -1026,7 +1026,7 @@ static const struct net_device_ops lance_netdev_ops = {
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
-static int __devinit dec_lance_probe(struct device *bdev, const int type)
+static int __init dec_lance_probe(struct device *bdev, const int type)
 {
 	static unsigned version_printed;
 	static const char fmt[] = "declance%d";
@@ -1330,7 +1330,7 @@ static void __exit dec_lance_platform_remove(void)
 }
 
 #ifdef CONFIG_TC
-static int __devinit dec_lance_tc_probe(struct device *dev);
+static int __init dec_lance_tc_probe(struct device *dev);
 static int __exit dec_lance_tc_remove(struct device *dev);
 
 static const struct tc_device_id dec_lance_tc_table[] = {
@@ -1349,7 +1349,7 @@ static struct tc_driver dec_lance_tc_driver = {
 	},
 };
 
-static int __devinit dec_lance_tc_probe(struct device *dev)
+static int __init dec_lance_tc_probe(struct device *dev)
 {
         int status = dec_lance_probe(dev, PMAD_LANCE);
         if (!status)

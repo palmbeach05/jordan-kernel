@@ -1921,30 +1921,6 @@ long do_mount(char *dev_name, char *dir_name, char *type_page,
 	if (data_page)
 		((char *)data_page)[PAGE_SIZE - 1] = 0;
 
-	/* Default to noatime/nodiratime unless overriden */
-	if (!(flags & MS_RELATIME))
-		mnt_flags |= MNT_NOATIME;
-
-	/* Separate the per-mountpoint flags */
-	if (flags & MS_NOSUID)
-		mnt_flags |= MNT_NOSUID;
-	if (flags & MS_NODEV)
-		mnt_flags |= MNT_NODEV;
-	if (flags & MS_NOEXEC)
-		mnt_flags |= MNT_NOEXEC;
-	
-	mnt_flags |= MNT_NOATIME;
-	mnt_flags |= MNT_NODIRATIME;
-	
-	if (flags & MS_STRICTATIME)
-		mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
-	if (flags & MS_RDONLY)
-		mnt_flags |= MNT_READONLY;
-
-	flags &= ~(MS_NOSUID | MS_NOEXEC | MS_NODEV | MS_ACTIVE |
-		   MS_NOATIME | MS_NODIRATIME | MS_RELATIME| MS_KERNMOUNT |
-		   MS_STRICTATIME);
-
 	/* ... and get the mountpoint */
 	retval = kern_path(dir_name, LOOKUP_FOLLOW, &path);
 	if (retval)
@@ -1954,6 +1930,30 @@ long do_mount(char *dev_name, char *dir_name, char *type_page,
 				   type_page, flags, data_page);
 	if (retval)
 		goto dput_out;
+
+	/* Default to relatime unless overriden */
+	if (!(flags & MS_NOATIME))
+		mnt_flags |= MNT_RELATIME;
+
+	/* Separate the per-mountpoint flags */
+	if (flags & MS_NOSUID)
+		mnt_flags |= MNT_NOSUID;
+	if (flags & MS_NODEV)
+		mnt_flags |= MNT_NODEV;
+	if (flags & MS_NOEXEC)
+		mnt_flags |= MNT_NOEXEC;
+	if (flags & MS_NOATIME)
+		mnt_flags |= MNT_NOATIME;
+	if (flags & MS_NODIRATIME)
+		mnt_flags |= MNT_NODIRATIME;
+	if (flags & MS_STRICTATIME)
+		mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
+	if (flags & MS_RDONLY)
+		mnt_flags |= MNT_READONLY;
+
+	flags &= ~(MS_NOSUID | MS_NOEXEC | MS_NODEV | MS_ACTIVE |
+		   MS_NOATIME | MS_NODIRATIME | MS_RELATIME| MS_KERNMOUNT |
+		   MS_STRICTATIME);
 
 	if (flags & MS_REMOUNT)
 		retval = do_remount(&path, flags & ~MS_REMOUNT, mnt_flags,

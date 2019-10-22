@@ -768,6 +768,10 @@ static void __init common_init(void)
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(spitz_pin_config));
 
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
 	spitz_init_spi();
 
 	platform_add_devices(devices, ARRAY_SIZE(devices));
@@ -856,6 +860,7 @@ static void __init fixup_spitz(struct machine_desc *desc,
 	sharpsl_save_param();
 	mi->nr_banks = 1;
 	mi->bank[0].start = 0xa0000000;
+	mi->bank[0].node = 0;
 	mi->bank[0].size = (64*1024*1024);
 }
 

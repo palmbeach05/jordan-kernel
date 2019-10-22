@@ -29,10 +29,9 @@
 #include <plat/mailbox.h>
 
 static struct omap_mbox *mboxes;
-static DEFINE_SPINLOCK(mboxes_lock);
+static DEFINE_RWLOCK(mboxes_lock);
 
 static int mbox_configured;
-static DEFINE_MUTEX(mbox_configured_lock);
 
 /* Mailbox FIFO handle functions */
 static inline mbox_msg_t mbox_fifo_read(struct omap_mbox *mbox)
@@ -248,16 +247,16 @@ static int omap_mbox_startup(struct omap_mbox *mbox)
 	struct omap_mbox_queue *mq;
 
 	if (likely(mbox->ops->startup)) {
-		mutex_lock(&mbox_configured_lock);
+		write_lock(&mboxes_lock);
 		if (!mbox_configured)
 			ret = mbox->ops->startup(mbox);
 
 		if (unlikely(ret)) {
-			mutex_unlock(&mbox_configured_lock);
+			write_unlock(&mboxes_lock);
 			return ret;
 		}
 		mbox_configured++;
-		mutex_unlock(&mbox_configured_lock);
+		write_unlock(&mboxes_lock);
 	}
 
 	ret = request_irq(mbox->irq, mbox_interrupt, IRQF_SHARED,
@@ -303,12 +302,12 @@ static void omap_mbox_fini(struct omap_mbox *mbox)
 	free_irq(mbox->irq, mbox);
 
 	if (unlikely(mbox->ops->shutdown)) {
-		mutex_lock(&mbox_configured_lock);
+		write_lock(&mboxes_lock);
 		if (mbox_configured > 0)
 			mbox_configured--;
 		if (!mbox_configured)
 			mbox->ops->shutdown(mbox);
-		mutex_unlock(&mbox_configured_lock);
+		write_unlock(&mboxes_lock);
 	}
 }
 
@@ -329,14 +328,14 @@ struct omap_mbox *omap_mbox_get(const char *name)
 	struct omap_mbox *mbox;
 	int ret;
 
-	spin_lock(&mboxes_lock);
+	read_lock(&mboxes_lock);
 	mbox = *(find_mboxes(name));
 	if (mbox == NULL) {
-		spin_unlock(&mboxes_lock);
+		read_unlock(&mboxes_lock);
 		return ERR_PTR(-ENOENT);
 	}
 
-	spin_unlock(&mboxes_lock);
+	read_unlock(&mboxes_lock);
 
 	ret = omap_mbox_startup(mbox);
 	if (ret)
@@ -362,15 +361,15 @@ int omap_mbox_register(struct device *parent, struct omap_mbox *mbox)
 	if (mbox->next)
 		return -EBUSY;
 
-	spin_lock(&mboxes_lock);
+	write_lock(&mboxes_lock);
 	tmp = find_mboxes(mbox->name);
 	if (*tmp) {
 		ret = -EBUSY;
-		spin_unlock(&mboxes_lock);
+		write_unlock(&mboxes_lock);
 		goto err_find;
 	}
 	*tmp = mbox;
-	spin_unlock(&mboxes_lock);
+	write_unlock(&mboxes_lock);
 
 	return 0;
 
@@ -383,18 +382,18 @@ int omap_mbox_unregister(struct omap_mbox *mbox)
 {
 	struct omap_mbox **tmp;
 
-	spin_lock(&mboxes_lock);
+	write_lock(&mboxes_lock);
 	tmp = &mboxes;
 	while (*tmp) {
 		if (mbox == *tmp) {
 			*tmp = mbox->next;
 			mbox->next = NULL;
-			spin_unlock(&mboxes_lock);
+			write_unlock(&mboxes_lock);
 			return 0;
 		}
 		tmp = &(*tmp)->next;
 	}
-	spin_unlock(&mboxes_lock);
+	write_unlock(&mboxes_lock);
 
 	return -EINVAL;
 }

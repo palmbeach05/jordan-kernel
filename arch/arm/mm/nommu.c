@@ -6,8 +6,8 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#include <linux/bootmem.h>
 #include <linux/io.h>
-#include <linux/memblock.h>
 
 #include <asm/cacheflush.h>
 #include <asm/sections.h>
@@ -17,14 +17,30 @@
 
 #include "mm.h"
 
-void __init arm_mm_memblock_reserve(void)
+/*
+ * Reserve the various regions of node 0
+ */
+void __init reserve_node_zero(pg_data_t *pgdat)
 {
+	/*
+	 * Register the kernel text and data with bootmem.
+	 * Note that this can only be in node 0.
+	 */
+#ifdef CONFIG_XIP_KERNEL
+	reserve_bootmem_node(pgdat, __pa(_data), _end - _data,
+			BOOTMEM_DEFAULT);
+#else
+	reserve_bootmem_node(pgdat, __pa(_stext), _end - _stext,
+			BOOTMEM_DEFAULT);
+#endif
+
 	/*
 	 * Register the exception vector page.
 	 * some architectures which the DRAM is the exception vector to trap,
 	 * alloc_page breaks with error, although it is not NULL, but "0."
 	 */
-	memblock_reserve(CONFIG_VECTORS_BASE, PAGE_SIZE);
+	reserve_bootmem_node(pgdat, CONFIG_VECTORS_BASE, PAGE_SIZE,
+			BOOTMEM_DEFAULT);
 }
 
 /*
@@ -33,7 +49,7 @@ void __init arm_mm_memblock_reserve(void)
  */
 void __init paging_init(struct machine_desc *mdesc)
 {
-	bootmem_init(mdesc);
+	bootmem_init();
 }
 
 /*
@@ -45,18 +61,9 @@ void setup_mm_for_reboot(char mode)
 
 void flush_dcache_page(struct page *page)
 {
-	__cpuc_flush_dcache_page(page_address(page));
+	__cpuc_flush_dcache_area(page_address(page), PAGE_SIZE);
 }
 EXPORT_SYMBOL(flush_dcache_page);
-
-void copy_to_user_page(struct vm_area_struct *vma, struct page *page,
-		       unsigned long uaddr, void *dst, const void *src,
-		       unsigned long len)
-{
-	memcpy(dst, src, len);
-	if (vma->vm_flags & VM_EXEC)
-		__cpuc_coherent_user_range(uaddr, uaddr + len);
-}
 
 void __iomem *__arm_ioremap_pfn(unsigned long pfn, unsigned long offset,
 				size_t size, unsigned int mtype)

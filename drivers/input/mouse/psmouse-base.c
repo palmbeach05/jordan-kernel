@@ -39,13 +39,11 @@ MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
 static unsigned int psmouse_max_proto = PSMOUSE_AUTO;
-static int psmouse_set_maxproto(const char *val, const struct kernel_param *);
-static int psmouse_get_maxproto(char *buffer, const struct kernel_param *kp);
-static struct kernel_param_ops param_ops_proto_abbrev = {
-	.set = psmouse_set_maxproto,
-	.get = psmouse_get_maxproto,
-};
+static int psmouse_set_maxproto(const char *val, struct kernel_param *kp);
+static int psmouse_get_maxproto(char *buffer, struct kernel_param *kp);
 #define param_check_proto_abbrev(name, p)	__param_check(name, p, unsigned int)
+#define param_set_proto_abbrev			psmouse_set_maxproto
+#define param_get_proto_abbrev			psmouse_get_maxproto
 module_param_named(proto, psmouse_max_proto, proto_abbrev, 0644);
 MODULE_PARM_DESC(proto, "Highest protocol extension to probe (bare, imps, exps, any). Useful for KVM switches.");
 
@@ -427,6 +425,7 @@ static int genius_detect(struct psmouse *psmouse, bool set_properties)
 		return -1;
 
 	if (set_properties) {
+		__set_bit(BTN_MIDDLE, psmouse->dev->keybit);
 		__set_bit(BTN_EXTRA, psmouse->dev->keybit);
 		__set_bit(BTN_SIDE, psmouse->dev->keybit);
 		__set_bit(REL_WHEEL, psmouse->dev->relbit);
@@ -462,8 +461,10 @@ static int intellimouse_detect(struct psmouse *psmouse, bool set_properties)
 		__set_bit(BTN_MIDDLE, psmouse->dev->keybit);
 		__set_bit(REL_WHEEL, psmouse->dev->relbit);
 
-		if (!psmouse->vendor) psmouse->vendor = "Generic";
-		if (!psmouse->name) psmouse->name = "Wheel Mouse";
+		if (!psmouse->vendor)
+			psmouse->vendor = "Generic";
+		if (!psmouse->name)
+			psmouse->name = "Wheel Mouse";
 		psmouse->pktsize = 4;
 	}
 
@@ -506,8 +507,10 @@ static int im_explorer_detect(struct psmouse *psmouse, bool set_properties)
 		__set_bit(BTN_SIDE, psmouse->dev->keybit);
 		__set_bit(BTN_EXTRA, psmouse->dev->keybit);
 
-		if (!psmouse->vendor) psmouse->vendor = "Generic";
-		if (!psmouse->name) psmouse->name = "Explorer Mouse";
+		if (!psmouse->vendor)
+			psmouse->vendor = "Generic";
+		if (!psmouse->name)
+			psmouse->name = "Explorer Mouse";
 		psmouse->pktsize = 4;
 	}
 
@@ -538,6 +541,7 @@ static int thinking_detect(struct psmouse *psmouse, bool set_properties)
 		return -1;
 
 	if (set_properties) {
+		__set_bit(BTN_MIDDLE, psmouse->dev->keybit);
 		__set_bit(BTN_EXTRA, psmouse->dev->keybit);
 
 		psmouse->vendor = "Kensington";
@@ -553,8 +557,16 @@ static int thinking_detect(struct psmouse *psmouse, bool set_properties)
 static int ps2bare_detect(struct psmouse *psmouse, bool set_properties)
 {
 	if (set_properties) {
-		if (!psmouse->vendor) psmouse->vendor = "Generic";
-		if (!psmouse->name) psmouse->name = "Mouse";
+		if (!psmouse->vendor)
+			psmouse->vendor = "Generic";
+		if (!psmouse->name)
+			psmouse->name = "Mouse";
+
+/*
+ * We have no way of figuring true number of buttons so let's
+ * assume that the device has 3.
+ */
+		__set_bit(BTN_MIDDLE, psmouse->dev->keybit);
 	}
 
 	return 0;
@@ -569,6 +581,8 @@ static int cortron_detect(struct psmouse *psmouse, bool set_properties)
 	if (set_properties) {
 		psmouse->vendor = "Cortron";
 		psmouse->name = "PS/2 Trackball";
+
+		__set_bit(BTN_MIDDLE, psmouse->dev->keybit);
 		__set_bit(BTN_SIDE, psmouse->dev->keybit);
 	}
 
@@ -669,6 +683,19 @@ static int psmouse_extensions(struct psmouse *psmouse,
 		max_proto = PSMOUSE_IMEX;
 	}
 
+/*
+ * Try Finger Sensing Pad
+ */
+	if (max_proto > PSMOUSE_IMEX) {
+		if (fsp_detect(psmouse, set_properties) == 0) {
+			if (!set_properties || fsp_init(psmouse) == 0)
+				return PSMOUSE_FSP;
+/*
+ * Init failed, try basic relative protocols
+ */
+			max_proto = PSMOUSE_IMEX;
+		}
+	}
 
 	if (max_proto > PSMOUSE_IMEX) {
 		if (genius_detect(psmouse, set_properties) == 0)
@@ -682,21 +709,6 @@ static int psmouse_extensions(struct psmouse *psmouse,
 
 		if (touchkit_ps2_detect(psmouse, set_properties) == 0)
 			return PSMOUSE_TOUCHKIT_PS2;
-	}
-
-/*
- * Try Finger Sensing Pad. We do it here because its probe upsets
- * Trackpoint devices (causing TP_READ_ID command to time out).
- */
-	if (max_proto > PSMOUSE_IMEX) {
-		if (fsp_detect(psmouse, set_properties) == 0) {
-			if (!set_properties || fsp_init(psmouse) == 0)
-				return PSMOUSE_FSP;
-/*
- * Init failed, try basic relative protocols
- */
-			max_proto = PSMOUSE_IMEX;
-		}
 	}
 
 /*
@@ -1188,15 +1200,16 @@ static void psmouse_disconnect(struct serio *serio)
 	mutex_unlock(&psmouse_mutex);
 }
 
-static int psmouse_switch_protocol(struct psmouse *psmouse, const struct psmouse_protocol *proto)
+static int psmouse_switch_protocol(struct psmouse *psmouse,
+				   const struct psmouse_protocol *proto)
 {
 	struct input_dev *input_dev = psmouse->dev;
 
 	input_dev->dev.parent = &psmouse->ps2dev.serio->dev;
 
 	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REL);
-	input_dev->keybit[BIT_WORD(BTN_MOUSE)] = BIT_MASK(BTN_LEFT) |
-		BIT_MASK(BTN_MIDDLE) | BIT_MASK(BTN_RIGHT);
+	input_dev->keybit[BIT_WORD(BTN_MOUSE)] =
+				BIT_MASK(BTN_LEFT) | BIT_MASK(BTN_RIGHT);
 	input_dev->relbit[0] = BIT_MASK(REL_X) | BIT_MASK(REL_Y);
 
 	psmouse->set_rate = psmouse_set_rate;
@@ -1213,8 +1226,7 @@ static int psmouse_switch_protocol(struct psmouse *psmouse, const struct psmouse
 			return -1;
 
 		psmouse->type = proto->type;
-	}
-	else
+	} else
 		psmouse->type = psmouse_extensions(psmouse,
 						   psmouse_max_proto, true);
 
@@ -1656,7 +1668,7 @@ static ssize_t psmouse_attr_set_resolution(struct psmouse *psmouse, void *data, 
 }
 
 
-static int psmouse_set_maxproto(const char *val, const struct kernel_param *kp)
+static int psmouse_set_maxproto(const char *val, struct kernel_param *kp)
 {
 	const struct psmouse_protocol *proto;
 
@@ -1673,7 +1685,7 @@ static int psmouse_set_maxproto(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
-static int psmouse_get_maxproto(char *buffer, const struct kernel_param *kp)
+static int psmouse_get_maxproto(char *buffer, struct kernel_param *kp)
 {
 	int type = *((unsigned int *)kp->arg);
 
@@ -1683,6 +1695,9 @@ static int psmouse_get_maxproto(char *buffer, const struct kernel_param *kp)
 static int __init psmouse_init(void)
 {
 	int err;
+
+	lifebook_module_init();
+	synaptics_module_init();
 
 	kpsmoused_wq = create_singlethread_workqueue("kpsmoused");
 	if (!kpsmoused_wq) {

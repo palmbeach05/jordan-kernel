@@ -10,9 +10,6 @@
  * Copyright (C) 2009 Texas Instruments
  * Added OMAP4 support - Santosh Shilimkar <santosh.shilimkar@ti.com>
  *
- * Copyright (C) 2010 Motorola Inc.
- * API improvements.
- *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
@@ -554,20 +551,7 @@ void omap_dm_timer_stop(struct omap_dm_timer *timer)
 	if (l & OMAP_TIMER_CTRL_ST) {
 		l &= ~0x1;
 		omap_dm_timer_write_reg(timer, OMAP_TIMER_CTRL_REG, l);
-#if defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3) || \
-			defined(CONFIG_ARCH_OMAP4)
-		/* Readback to make sure write has completed */
-		omap_dm_timer_read_reg(timer, OMAP_TIMER_CTRL_REG);
-		 /*
-		  * Wait for functional clock period x 3.5 to make sure that
-		  * timer is stopped
-		  */
-		udelay(3500000 / clk_get_rate(timer->fclk) + 1);
-#endif
 	}
-	/* Ack possibly pending interrupt */
-	omap_dm_timer_write_reg(timer, OMAP_TIMER_STAT_REG,
-			OMAP_TIMER_INT_OVERFLOW);
 }
 EXPORT_SYMBOL_GPL(omap_dm_timer_stop);
 
@@ -627,12 +611,6 @@ void omap_dm_timer_set_load(struct omap_dm_timer *timer, int autoreload,
 	omap_dm_timer_write_reg(timer, OMAP_TIMER_TRIGGER_REG, 0);
 }
 EXPORT_SYMBOL_GPL(omap_dm_timer_set_load);
-
-void omap_dm_timer_update_load(struct omap_dm_timer *timer, unsigned int load)
-{
-	omap_dm_timer_write_reg(timer, OMAP_TIMER_LOAD_REG, load);
-}
-EXPORT_SYMBOL_GPL(omap_dm_timer_update_load);
 
 /* Optimized set_load which removes costly spin wait in timer_start */
 void omap_dm_timer_set_load_start(struct omap_dm_timer *timer, int autoreload,

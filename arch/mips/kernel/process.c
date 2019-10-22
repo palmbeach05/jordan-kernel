@@ -26,7 +26,6 @@
 #include <linux/completion.h>
 #include <linux/kallsyms.h>
 #include <linux/random.h>
-#include <trace/sched.h>
 
 #include <asm/asm.h>
 #include <asm/bootinfo.h>
@@ -43,8 +42,6 @@
 #include <asm/isadep.h>
 #include <asm/inst.h>
 #include <asm/stacktrace.h>
-
-DEFINE_TRACE(sched_kthread_create);
 
 /*
  * The idle thread. There's no useful work to be done, so just try to conserve
@@ -234,7 +231,6 @@ static void __noreturn kernel_thread_helper(void *arg, int (*fn)(void *))
 long kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 {
 	struct pt_regs regs;
-	long pid;
 
 	memset(&regs, 0, sizeof(regs));
 
@@ -250,10 +246,7 @@ long kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 #endif
 
 	/* Ok, create the new process.. */
-	pid = do_fork(flags | CLONE_VM | CLONE_UNTRACED,
-			0, &regs, 0, NULL, NULL);
-	trace_sched_kthread_create(fn, pid);
-	return pid;
+	return do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0, &regs, 0, NULL, NULL);
 }
 
 /*

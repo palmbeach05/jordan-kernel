@@ -27,9 +27,6 @@
 #include <asm/unistd.h>
 #include <asm/cacheflush.h>
 #include <asm/cachectl.h>
-#include <trace/ipc.h>
-
-DEFINE_TRACE(ipc_call);
 
 asmlinkage int old_mmap(unsigned long addr, unsigned long len,
 	unsigned long prot, unsigned long flags,
@@ -68,8 +65,6 @@ asmlinkage int sys_ipc(uint call, int first, int second,
 
 	version = call >> 16; /* hack for backward compatibility */
 	call &= 0xffff;
-
-	trace_ipc_call(call, first);
 
 	if (call <= SEMTIMEDOP)
 		switch (call) {

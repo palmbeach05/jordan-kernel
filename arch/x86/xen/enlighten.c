@@ -27,7 +27,9 @@
 #include <linux/page-flags.h>
 #include <linux/highmem.h>
 #include <linux/console.h>
+#include <linux/pci.h>
 
+#include <xen/xen.h>
 #include <xen/interface/xen.h>
 #include <xen/interface/version.h>
 #include <xen/interface/physdev.h>
@@ -949,7 +951,6 @@ static const struct pv_cpu_ops xen_cpu_ops __initdata = {
 	.read_pmc = native_read_pmc,
 
 	.iret = xen_iret,
-	.nmi_return = xen_iret,
 	.irq_enable_sysexit = xen_sysexit,
 #ifdef CONFIG_X86_64
 	.usergs_sysret32 = xen_sysret32,
@@ -1093,10 +1094,8 @@ asmlinkage void __init xen_start_kernel(void)
 
 	__supported_pte_mask |= _PAGE_IOMAP;
 
-#ifdef CONFIG_X86_64
 	/* Work out if we support NX */
-	check_efer();
-#endif
+	x86_configure_nx();
 
 	xen_setup_features();
 
@@ -1178,7 +1177,11 @@ asmlinkage void __init xen_start_kernel(void)
 		add_preferred_console("xenboot", 0, NULL);
 		add_preferred_console("tty", 0, NULL);
 		add_preferred_console("hvc", 0, NULL);
+	} else {
+		/* Make sure ACS will be enabled */
+		pci_request_acs();
 	}
+		
 
 	xen_raw_console_write("about to get started...\n");
 

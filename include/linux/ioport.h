@@ -39,7 +39,6 @@ struct resource_list {
 #define IORESOURCE_MEM		0x00000200
 #define IORESOURCE_IRQ		0x00000400
 #define IORESOURCE_DMA		0x00000800
-#define IORESOURCE_BUS		0x00001000
 
 #define IORESOURCE_PREFETCH	0x00001000	/* No side effects */
 #define IORESOURCE_READONLY	0x00002000
@@ -51,7 +50,6 @@ struct resource_list {
 #define IORESOURCE_STARTALIGN	0x00040000	/* start field is alignment */
 
 #define IORESOURCE_MEM_64	0x00100000
-#define IORESOURCE_WINDOW	0x00200000	/* forwarded by bridge */
 
 #define IORESOURCE_EXCLUSIVE	0x08000000	/* Userland may not map this resource */
 #define IORESOURCE_DISABLED	0x10000000
@@ -128,11 +126,11 @@ extern int allocate_resource(struct resource *root, struct resource *new,
 int adjust_resource(struct resource *res, resource_size_t start,
 		    resource_size_t size);
 resource_size_t resource_alignment(struct resource *res);
-static inline resource_size_t resource_size(struct resource *res)
+static inline resource_size_t resource_size(const struct resource *res)
 {
 	return res->end - res->start + 1;
 }
-static inline unsigned long resource_type(struct resource *res)
+static inline unsigned long resource_type(const struct resource *res)
 {
 	return res->flags & IORESOURCE_TYPE_BITS;
 }

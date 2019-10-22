@@ -29,21 +29,14 @@ obj-$(CONFIG_LEDS_DA903X)		+= leds-da903x.o
 obj-$(CONFIG_LEDS_WM831X_STATUS)	+= leds-wm831x-status.o
 obj-$(CONFIG_LEDS_WM8350)		+= leds-wm8350.o
 obj-$(CONFIG_LEDS_PWM)			+= leds-pwm.o
-obj-$(CONFIG_LEDS_BD7885)               += leds-bd7885.o
-obj-$(CONFIG_LEDS_BU9847)               += leds-bu9847.o
+obj-$(CONFIG_LEDS_REGULATOR)		+= leds-regulator.o
+obj-$(CONFIG_LEDS_INTEL_SS4200)		+= leds-ss4200.o
+obj-$(CONFIG_LEDS_LT3593)		+= leds-lt3593.o
+obj-$(CONFIG_LEDS_ADP5520)		+= leds-adp5520.o
 
 # LED SPI Drivers
 obj-$(CONFIG_LEDS_DAC124S085)		+= leds-dac124s085.o
-obj-$(CONFIG_KEYBOARD_ADP5588)          += leds-ld-adp5588-kpad.o
-obj-$(CONFIG_LEDS_LM3530)		+= led-lm3530.o
-obj-$(CONFIG_LEDS_LM3554)		+= led-cpcap-lm3554.o
-obj-$(CONFIG_LEDS_LM3559)		+= led-cpcap-lm3559.o
-obj-$(CONFIG_LEDS_CPCAP)		+= leds-cpcap-adb.o \
-					   leds-cpcap-gpio.o \
-					   leds-cpcap-kpb.o \
-					   leds-cpcap-mdb.o \
-					   leds-cpcap-rgb.o \
-					   leds-cpcap-usb.o
+
 # LED Triggers
 obj-$(CONFIG_LEDS_TRIGGER_TIMER)	+= ledtrig-timer.o
 obj-$(CONFIG_LEDS_TRIGGER_IDE_DISK)	+= ledtrig-ide-disk.o
@@ -51,5 +44,3 @@ obj-$(CONFIG_LEDS_TRIGGER_HEARTBEAT)	+= ledtrig-heartbeat.o
 obj-$(CONFIG_LEDS_TRIGGER_BACKLIGHT)	+= ledtrig-backlight.o
 obj-$(CONFIG_LEDS_TRIGGER_GPIO)		+= ledtrig-gpio.o
 obj-$(CONFIG_LEDS_TRIGGER_DEFAULT_ON)	+= ledtrig-default-on.o
-obj-$(CONFIG_LEDS_TRIGGER_SLEEP)	+= ledtrig-sleep.o
-

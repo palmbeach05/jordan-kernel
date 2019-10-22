@@ -23,10 +23,7 @@
 #include <linux/rcupdate.h>
 #include <linux/ftrace.h>
 #include <linux/smp.h>
-#include <linux/marker.h>
-#include <linux/kallsyms.h>
 #include <linux/tick.h>
-#include <trace/irq.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/irq.h>
@@ -57,31 +54,12 @@ EXPORT_SYMBOL(irq_stat);
 
 static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
 
-void ltt_dump_softirq_vec(void *call_data)
-{
-	int i;
-	char namebuf[KSYM_NAME_LEN];
-
-	for (i = 0; i < 32; i++) {
-		sprint_symbol(namebuf, (unsigned long)softirq_vec[i].action);
-		__trace_mark(0, softirq_state, softirq_vec, call_data,
-			"id %d address %p symbol %s",
-			i, softirq_vec[i].action, namebuf);
-	}
-}
-EXPORT_SYMBOL_GPL(ltt_dump_softirq_vec);
-
 static DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
 
 char *softirq_to_name[NR_SOFTIRQS] = {
 	"HI", "TIMER", "NET_TX", "NET_RX", "BLOCK", "BLOCK_IOPOLL",
 	"TASKLET", "SCHED", "HRTIMER",	"RCU"
 };
-
-DEFINE_TRACE(irq_tasklet_high_entry);
-DEFINE_TRACE(irq_tasklet_high_exit);
-DEFINE_TRACE(irq_tasklet_low_entry);
-DEFINE_TRACE(irq_tasklet_low_exit);
 
 /*
  * we cannot loop indefinitely here to avoid userspace starvation,
@@ -200,23 +178,21 @@ void local_bh_enable_ip(unsigned long ip)
 EXPORT_SYMBOL(local_bh_enable_ip);
 
 /*
- * We restart softirq processing for at most 2 ms,
- * and if need_resched() is not set.
+ * We restart softirq processing MAX_SOFTIRQ_RESTART times,
+ * and we fall back to softirqd after that.
  *
- * These limits have been established via experimentation.
+ * This number has been established via experimentation.
  * The two things to balance is latency against fairness -
  * we want to handle softirqs as soon as possible, but they
  * should not be able to lock up the box.
  */
-#define MAX_SOFTIRQ_TIME  msecs_to_jiffies(2)
-
-DEFINE_TRACE(softirq_raise);
+#define MAX_SOFTIRQ_RESTART 10
 
 asmlinkage void __do_softirq(void)
 {
 	struct softirq_action *h;
 	__u32 pending;
-	unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
+	int max_restart = MAX_SOFTIRQ_RESTART;
 	int cpu;
 
 	pending = local_softirq_pending();
@@ -260,12 +236,11 @@ restart:
 	local_irq_disable();
 
 	pending = local_softirq_pending();
-	if (pending) {
-		if (time_before(jiffies, end) && !need_resched())
-			goto restart;
+	if (pending && --max_restart)
+		goto restart;
 
+	if (pending)
 		wakeup_softirqd();
-	}
 
 	lockdep_softirq_exit();
 
@@ -327,9 +302,9 @@ void irq_exit(void)
 	if (!in_interrupt() && local_softirq_pending())
 		invoke_softirq();
 
+	rcu_irq_exit();
 #ifdef CONFIG_NO_HZ
 	/* Make sure that timer wheel updates are propagated */
-	rcu_irq_exit();
 	if (idle_cpu(smp_processor_id()) && !in_interrupt() && !need_resched())
 		tick_nohz_stop_sched_tick(0);
 #endif
@@ -341,7 +316,6 @@ void irq_exit(void)
  */
 inline void raise_softirq_irqoff(unsigned int nr)
 {
-	trace_softirq_raise(nr);
 	__raise_softirq_irqoff(nr);
 
 	/*
@@ -441,9 +415,7 @@ static void tasklet_action(struct softirq_action *a)
 			if (!atomic_read(&t->count)) {
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
 					BUG();
-				trace_irq_tasklet_low_entry(t);
 				t->func(t->data);
-				trace_irq_tasklet_low_exit(t);
 				tasklet_unlock(t);
 				continue;
 			}
@@ -478,9 +450,7 @@ static void tasklet_hi_action(struct softirq_action *a)
 			if (!atomic_read(&t->count)) {
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
 					BUG();
-				trace_irq_tasklet_high_entry(t);
 				t->func(t->data);
-				trace_irq_tasklet_high_exit(t);
 				tasklet_unlock(t);
 				continue;
 			}
@@ -727,7 +697,7 @@ void __init softirq_init(void)
 	open_softirq(HI_SOFTIRQ, tasklet_hi_action);
 }
 
-static int ksoftirqd(void * __bind_cpu)
+static int run_ksoftirqd(void * __bind_cpu)
 {
 	set_current_state(TASK_INTERRUPTIBLE);
 
@@ -840,7 +810,7 @@ static int __cpuinit cpu_callback(struct notifier_block *nfb,
 	switch (action) {
 	case CPU_UP_PREPARE:
 	case CPU_UP_PREPARE_FROZEN:
-		p = kthread_create(ksoftirqd, hcpu, "ksoftirqd/%d", hotcpu);
+		p = kthread_create(run_ksoftirqd, hcpu, "ksoftirqd/%d", hotcpu);
 		if (IS_ERR(p)) {
 			printk("ksoftirqd for %i failed\n", hotcpu);
 			return NOTIFY_BAD;

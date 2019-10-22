@@ -18,14 +18,11 @@
 #include <linux/file.h>
 #include <linux/utsname.h>
 #include <linux/ipc.h>
-#include <trace/ipc.h>
 
 #include <linux/uaccess.h>
 #include <linux/unistd.h>
 
 #include <asm/syscalls.h>
-
-DEFINE_TRACE(ipc_call);
 
 /*
  * Perform the select(nd, in, out, ex, tv) and mmap() system
@@ -61,6 +58,23 @@ out:
 	return err;
 }
 
+
+struct sel_arg_struct {
+	unsigned long n;
+	fd_set __user *inp, *outp, *exp;
+	struct timeval __user *tvp;
+};
+
+asmlinkage int old_select(struct sel_arg_struct __user *arg)
+{
+	struct sel_arg_struct a;
+
+	if (copy_from_user(&a, arg, sizeof(a)))
+		return -EFAULT;
+	/* sys_select() does the appropriate kernel locking */
+	return sys_select(a.n, a.inp, a.outp, a.exp, a.tvp);
+}
+
 /*
  * sys_ipc() is the de-multiplexer for the SysV IPC calls..
  *
@@ -73,8 +87,6 @@ asmlinkage int sys_ipc(uint call, int first, int second,
 
 	version = call >> 16; /* hack for backward compatibility */
 	call &= 0xffff;
-
-	trace_ipc_call(call, first);
 
 	switch (call) {
 	case SEMOP:

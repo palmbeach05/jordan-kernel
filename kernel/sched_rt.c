@@ -194,20 +194,17 @@ static inline struct rt_rq *group_rt_rq(struct sched_rt_entity *rt_se)
 	return rt_se->my_q;
 }
 
-static void enqueue_rt_entity(struct sched_rt_entity *rt_se, bool head);
+static void enqueue_rt_entity(struct sched_rt_entity *rt_se);
 static void dequeue_rt_entity(struct sched_rt_entity *rt_se);
 
 static void sched_rt_rq_enqueue(struct rt_rq *rt_rq)
 {
-	int this_cpu = smp_processor_id();
 	struct task_struct *curr = rq_of_rt_rq(rt_rq)->curr;
-	struct sched_rt_entity *rt_se;
-
-	rt_se = rt_rq->tg->rt_se[this_cpu];
+	struct sched_rt_entity *rt_se = rt_rq->rt_se;
 
 	if (rt_rq->rt_nr_running) {
 		if (rt_se && !on_rt_rq(rt_se))
-			enqueue_rt_entity(rt_se, false);
+			enqueue_rt_entity(rt_se);
 		if (rt_rq->highest_prio.curr < curr->prio)
 			resched_task(curr);
 	}
@@ -215,10 +212,7 @@ static void sched_rt_rq_enqueue(struct rt_rq *rt_rq)
 
 static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
 {
-	int this_cpu = smp_processor_id();
-	struct sched_rt_entity *rt_se;
-
-	rt_se = rt_rq->tg->rt_se[this_cpu];
+	struct sched_rt_entity *rt_se = rt_rq->rt_se;
 
 	if (rt_se && on_rt_rq(rt_se))
 		dequeue_rt_entity(rt_se);
@@ -809,7 +803,7 @@ void dec_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 	dec_rt_group(rt_se, rt_rq);
 }
 
-static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, bool head)
+static void __enqueue_rt_entity(struct sched_rt_entity *rt_se)
 {
 	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
 	struct rt_prio_array *array = &rt_rq->active;
@@ -825,10 +819,7 @@ static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, bool head)
 	if (group_rq && (rt_rq_throttled(group_rq) || !group_rq->rt_nr_running))
 		return;
 
-	if (head)
-		list_add(&rt_se->run_list, queue);
-	else
-		list_add_tail(&rt_se->run_list, queue);
+	list_add_tail(&rt_se->run_list, queue);
 	__set_bit(rt_se_prio(rt_se), array->bitmap);
 
 	inc_rt_tasks(rt_se, rt_rq);
@@ -865,11 +856,11 @@ static void dequeue_rt_stack(struct sched_rt_entity *rt_se)
 	}
 }
 
-static void enqueue_rt_entity(struct sched_rt_entity *rt_se, bool head)
+static void enqueue_rt_entity(struct sched_rt_entity *rt_se)
 {
 	dequeue_rt_stack(rt_se);
 	for_each_sched_rt_entity(rt_se)
-		__enqueue_rt_entity(rt_se, head);
+		__enqueue_rt_entity(rt_se);
 }
 
 static void dequeue_rt_entity(struct sched_rt_entity *rt_se)
@@ -880,22 +871,21 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se)
 		struct rt_rq *rt_rq = group_rt_rq(rt_se);
 
 		if (rt_rq && rt_rq->rt_nr_running)
-			__enqueue_rt_entity(rt_se, false);
+			__enqueue_rt_entity(rt_se);
 	}
 }
 
 /*
  * Adding/removing a task to/from a priority array:
  */
-static void
-enqueue_task_rt(struct rq *rq, struct task_struct *p, int wakeup, bool head)
+static void enqueue_task_rt(struct rq *rq, struct task_struct *p, int wakeup)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
 
 	if (wakeup)
 		rt_se->timeout = 0;
 
-	enqueue_rt_entity(rt_se, head);
+	enqueue_rt_entity(rt_se);
 
 	if (!task_current(rq, p) && p->rt.nr_cpus_allowed > 1)
 		enqueue_pushable_task(rq, p);
@@ -1482,13 +1472,31 @@ static void post_schedule_rt(struct rq *rq)
  * If we are not running and we are not going to reschedule soon, we should
  * try to push tasks away now
  */
-static void task_woken_rt(struct rq *rq, struct task_struct *p)
+static void task_wake_up_rt(struct rq *rq, struct task_struct *p)
 {
 	if (!task_running(rq, p) &&
 	    !test_tsk_need_resched(rq->curr) &&
 	    has_pushable_tasks(rq) &&
 	    p->rt.nr_cpus_allowed > 1)
 		push_rt_tasks(rq);
+}
+
+static unsigned long
+load_balance_rt(struct rq *this_rq, int this_cpu, struct rq *busiest,
+		unsigned long max_load_move,
+		struct sched_domain *sd, enum cpu_idle_type idle,
+		int *all_pinned, int *this_best_prio)
+{
+	/* don't touch RT tasks */
+	return 0;
+}
+
+static int
+move_one_task_rt(struct rq *this_rq, int this_cpu, struct rq *busiest,
+		 struct sched_domain *sd, enum cpu_idle_type idle)
+{
+	/* don't touch RT tasks */
+	return 0;
 }
 
 static void set_cpus_allowed_rt(struct task_struct *p,
@@ -1738,12 +1746,14 @@ static const struct sched_class rt_sched_class = {
 #ifdef CONFIG_SMP
 	.select_task_rq		= select_task_rq_rt,
 
+	.load_balance		= load_balance_rt,
+	.move_one_task		= move_one_task_rt,
 	.set_cpus_allowed       = set_cpus_allowed_rt,
 	.rq_online              = rq_online_rt,
 	.rq_offline             = rq_offline_rt,
 	.pre_schedule		= pre_schedule_rt,
 	.post_schedule		= post_schedule_rt,
-	.task_woken		= task_woken_rt,
+	.task_wake_up		= task_wake_up_rt,
 	.switched_from		= switched_from_rt,
 #endif
 

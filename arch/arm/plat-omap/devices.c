@@ -14,7 +14,6 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#include <linux/bootmem.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -91,33 +90,6 @@ EXPORT_SYMBOL(dsp_kfunc_device_register);
 static inline void omap_init_dsp(void) { }
 #endif	/* CONFIG_OMAP_DSP */
 
-#if defined(CONFIG_MPU_BRIDGE) ||  defined(CONFIG_MPU_BRIDGE_MODULE)
-
-static unsigned long dspbridge_phys_mempool_base;
-
-void dspbridge_reserve_sdram(void)
-{
-	void *va;
-	unsigned long size = CONFIG_BRIDGE_MEMPOOL_SIZE;
-
-	if (!size)
-		return;
-
-	va = __alloc_bootmem_nopanic(size, SZ_1M, 0);
-	if (!va) {
-		pr_err("%s: Failed to bootmem allocation(%lu bytes)\n",
-		       __func__, size);
-		return;
-	}
-	dspbridge_phys_mempool_base = virt_to_phys(va);
-}
-
-unsigned long dspbridge_get_mempool_base(void)
-{
-	return dspbridge_phys_mempool_base;
-}
-EXPORT_SYMBOL(dspbridge_get_mempool_base);
-#endif
 /*-------------------------------------------------------------------------*/
 #if	defined(CONFIG_KEYBOARD_OMAP) || defined(CONFIG_KEYBOARD_OMAP_MODULE)
 
@@ -270,6 +242,39 @@ fail:
 
 /*-------------------------------------------------------------------------*/
 
+#if defined(CONFIG_HW_RANDOM_OMAP) || defined(CONFIG_HW_RANDOM_OMAP_MODULE)
+
+#ifdef CONFIG_ARCH_OMAP24XX
+#define	OMAP_RNG_BASE		0x480A0000
+#else
+#define	OMAP_RNG_BASE		0xfffe5000
+#endif
+
+static struct resource rng_resources[] = {
+	{
+		.start		= OMAP_RNG_BASE,
+		.end		= OMAP_RNG_BASE + 0x4f,
+		.flags		= IORESOURCE_MEM,
+	},
+};
+
+static struct platform_device omap_rng_device = {
+	.name		= "omap_rng",
+	.id		= -1,
+	.num_resources	= ARRAY_SIZE(rng_resources),
+	.resource	= rng_resources,
+};
+
+static void omap_init_rng(void)
+{
+	(void) platform_device_register(&omap_rng_device);
+}
+#else
+static inline void omap_init_rng(void) {}
+#endif
+
+/*-------------------------------------------------------------------------*/
+
 /* Numbering for the SPI-capable controllers when used for SPI:
  * spi		= 1
  * uwire	= 2
@@ -337,7 +342,7 @@ static void omap_init_wdt(void)
 		wdt_resources[0].start = 0x48022000; /* WDT2 */
 	else if (cpu_is_omap2430())
 		wdt_resources[0].start = 0x49016000; /* WDT2 */
-	else if (cpu_is_omap34xx())
+	else if (cpu_is_omap343x())
 		wdt_resources[0].start = 0x48314000; /* WDT2 */
 	else if (cpu_is_omap44xx())
 		wdt_resources[0].start = 0x4a314000;
@@ -350,39 +355,6 @@ static void omap_init_wdt(void)
 }
 #else
 static inline void omap_init_wdt(void) {}
-#endif
-
-/*-------------------------------------------------------------------------*/
-
-#if defined(CONFIG_HW_RANDOM_OMAP) || defined(CONFIG_HW_RANDOM_OMAP_MODULE)
-
-#ifdef CONFIG_ARCH_OMAP24XX
-#define	OMAP_RNG_BASE		0x480A0000
-#else
-#define	OMAP_RNG_BASE		0xfffe5000
-#endif
-
-static struct resource rng_resources[] = {
-	{
-		.start		= OMAP_RNG_BASE,
-		.end		= OMAP_RNG_BASE + 0x4f,
-		.flags		= IORESOURCE_MEM,
-	},
-};
-
-static struct platform_device omap_rng_device = {
-	.name	   = "omap_rng",
-	.id	     = -1,
-	.num_resources	= ARRAY_SIZE(rng_resources),
-	.resource	= rng_resources,
-};
-
-static void omap_init_rng(void)
-{
-	(void) platform_device_register(&omap_rng_device);
-}
-#else
-static inline void omap_init_rng(void) {}
 #endif
 
 /*
@@ -412,9 +384,9 @@ static int __init omap_init_devices(void)
 	 */
 	omap_init_dsp();
 	omap_init_kp();
+	omap_init_rng();
 	omap_init_uwire();
 	omap_init_wdt();
-	omap_init_rng();
 	return 0;
 }
 arch_initcall(omap_init_devices);

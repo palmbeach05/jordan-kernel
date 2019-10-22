@@ -15,15 +15,10 @@
 #include <linux/console.h>
 #include <linux/cpu.h>
 #include <linux/syscalls.h>
-#include <linux/quickwakeup.h>
-#include <linux/wakelock.h>
 
 #include "power.h"
 
 const char *const pm_states[PM_SUSPEND_MAX] = {
-#ifdef CONFIG_EARLYSUSPEND
-	[PM_SUSPEND_ON]		= "on",
-#endif
 	[PM_SUSPEND_STANDBY]	= "standby",
 	[PM_SUSPEND_MEM]	= "mem",
 };
@@ -122,12 +117,12 @@ void __attribute__ ((weak)) arch_suspend_enable_irqs(void)
 }
 
 /**
- *	_suspend_enter - enter the desired system sleep state.
+ *	suspend_enter - enter the desired system sleep state.
  *	@state:		state to enter
  *
  *	This function should be called after devices have been suspended.
  */
-static int _suspend_enter(suspend_state_t state)
+static int suspend_enter(suspend_state_t state)
 {
 	int error;
 
@@ -164,9 +159,6 @@ static int _suspend_enter(suspend_state_t state)
 		if (!suspend_test(TEST_CORE))
 			error = suspend_ops->enter(state);
 		sysdev_resume();
-#ifdef CONFIG_QUICK_WAKEUP
-		quickwakeup_check();
-#endif
 	}
 
 	arch_suspend_enable_irqs();
@@ -189,22 +181,6 @@ static int _suspend_enter(suspend_state_t state)
 	return error;
 }
 
-static int suspend_enter(suspend_state_t state)
-{
-	int error = 0;
-
-	error = _suspend_enter(state);
-
-#ifdef CONFIG_QUICK_WAKEUP
-	while (!error && !quickwakeup_execute()) {
-		if (has_wake_lock(WAKE_LOCK_SUSPEND))
-			break;
-		error = _suspend_enter(state);
-	}
-#endif
-	return error;
-}
-
 /**
  *	suspend_devices_and_enter - suspend devices and enter the desired system
  *				    sleep state.
@@ -213,7 +189,6 @@ static int suspend_enter(suspend_state_t state)
 int suspend_devices_and_enter(suspend_state_t state)
 {
 	int error;
-	gfp_t saved_mask;
 
 	if (!suspend_ops)
 		return -ENOSYS;
@@ -224,7 +199,6 @@ int suspend_devices_and_enter(suspend_state_t state)
 			goto Close;
 	}
 	suspend_console();
-	saved_mask = clear_gfp_allowed_mask(GFP_IOFS);
 	suspend_test_start();
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
@@ -241,7 +215,6 @@ int suspend_devices_and_enter(suspend_state_t state)
 	suspend_test_start();
 	dpm_resume_end(PMSG_RESUME);
 	suspend_test_finish("resume devices");
-	set_gfp_allowed_mask(saved_mask);
 	resume_console();
  Close:
 	if (suspend_ops->end)

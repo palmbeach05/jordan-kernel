@@ -45,7 +45,6 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
-
 /* Handle HCI Event packets */
 
 static void hci_cc_inquiry_cancel(struct hci_dev *hdev, struct sk_buff *skb)
@@ -580,7 +579,7 @@ static inline void hci_cs_create_conn(struct hci_dev *hdev, __u8 status)
 		}
 	} else {
 		if (!conn) {
-			conn = hci_conn_add(hdev, ACL_LINK, 0, &cp->bdaddr);
+			conn = hci_conn_add(hdev, ACL_LINK, &cp->bdaddr);
 			if (conn) {
 				conn->out = 1;
 				conn->link_mode |= HCI_LM_MASTER;
@@ -965,9 +964,7 @@ static inline void hci_conn_request_evt(struct hci_dev *hdev, struct sk_buff *sk
 
 		conn = hci_conn_hash_lookup_ba(hdev, ev->link_type, &ev->bdaddr);
 		if (!conn) {
-			/* pkt_type not yet used for incoming connections */
-			if (!(conn = hci_conn_add(hdev, ev->link_type, 0,
-							&ev->bdaddr))) {
+			if (!(conn = hci_conn_add(hdev, ev->link_type, &ev->bdaddr))) {
 				BT_ERR("No memmory for new connection");
 				hci_dev_unlock(hdev);
 				return;
@@ -995,38 +992,13 @@ static inline void hci_conn_request_evt(struct hci_dev *hdev, struct sk_buff *sk
 			struct hci_cp_accept_sync_conn_req cp;
 
 			bacpy(&cp.bdaddr, &ev->bdaddr);
-				BT_DBG("incoming connec 1 conn->pkt_type %x",
-							conn->pkt_type);
-
-			if ((ev->link_type != SCO_LINK)	&&
-				(!(conn->features[5] & LMP_EDR_ESCO_2M)) &&
-					(conn->features[3] & LMP_ESCO)) {
-				/* Reject Connection */
-				struct hci_cp_reject_conn_req cp;
-
-				bacpy(&cp.bdaddr, &ev->bdaddr);
-				cp.reason = 0x0d;
-				BT_DBG("Rejecting eSCO-S3-2EV3");
-				hci_send_cmd(hdev, HCI_OP_REJECT_CONN_REQ,
-							 sizeof(cp), &cp);
-				return;
-			} else if (conn->features[5] & LMP_EDR_ESCO_2M) {
-				BT_DBG("Trying eSCO-S3-2EV3");
-				conn->pkt_type = 0x38d;
-				cp.max_latency    = cpu_to_le16(0x000a);
-				cp.retrans_effort = 0x01;
-			} else {
-				BT_DBG("Trying SCO-HV3");
-				conn->pkt_type = 0x03c5;
-				cp.max_latency    = cpu_to_le16(0xffff);
-				cp.retrans_effort = 0xff;
-			}
-
 			cp.pkt_type = cpu_to_le16(conn->pkt_type);
 
 			cp.tx_bandwidth   = cpu_to_le32(0x00001f40);
 			cp.rx_bandwidth   = cpu_to_le32(0x00001f40);
+			cp.max_latency    = cpu_to_le16(0xffff);
 			cp.content_format = cpu_to_le16(hdev->voice_setting);
+			cp.retrans_effort = 0xff;
 
 			hci_send_cmd(hdev, HCI_OP_ACCEPT_SYNC_CONN_REQ,
 							sizeof(cp), &cp);
@@ -1193,9 +1165,8 @@ static inline void hci_remote_features_evt(struct hci_dev *hdev, struct sk_buff 
 
 	conn = hci_conn_hash_lookup_handle(hdev, __le16_to_cpu(ev->handle));
 	if (conn) {
-		if (!ev->status) {
+		if (!ev->status)
 			memcpy(conn->features, ev->features, 8);
-		}
 
 		if (conn->state == BT_CONFIG) {
 			if (!ev->status && lmp_ssp_capable(hdev) &&
@@ -1349,7 +1320,7 @@ static inline void hci_cmd_complete_evt(struct hci_dev *hdev, struct sk_buff *sk
 	if (ev->ncmd) {
 		atomic_set(&hdev->cmd_cnt, 1);
 		if (!skb_queue_empty(&hdev->cmd_q))
-			hci_sched_cmd(hdev);
+			tasklet_schedule(&hdev->cmd_task);
 	}
 }
 
@@ -1415,7 +1386,7 @@ static inline void hci_cmd_status_evt(struct hci_dev *hdev, struct sk_buff *skb)
 	if (ev->ncmd) {
 		atomic_set(&hdev->cmd_cnt, 1);
 		if (!skb_queue_empty(&hdev->cmd_q))
-			hci_sched_cmd(hdev);
+			tasklet_schedule(&hdev->cmd_task);
 	}
 }
 
@@ -1483,7 +1454,7 @@ static inline void hci_num_comp_pkts_evt(struct hci_dev *hdev, struct sk_buff *s
 		}
 	}
 
-	hci_sched_tx(hdev);
+	tasklet_schedule(&hdev->tx_task);
 
 	tasklet_enable(&hdev->tx_task);
 }
@@ -1727,16 +1698,11 @@ static inline void hci_sync_conn_complete_evt(struct hci_dev *hdev, struct sk_bu
 		hci_conn_add_sysfs(conn);
 		break;
 
-	case 0x10:	/* Connection Accept Timeout */
 	case 0x1c:	/* SCO interval rejected */
-	case 0x1a:	/* unsupported feature */
 	case 0x1f:	/* Unspecified error */
 		if (conn->out && conn->attempt < 2) {
-			BT_DBG("Negotiation ... ");
-			BT_DBG("t... conn->pkt_type %x", conn->pkt_type);
-			conn->pkt_type = 0x38D;
-			BT_DBG("t... 2EV5 conn->pkt_type %x", conn->pkt_type);
-
+			conn->pkt_type = (hdev->esco_type & SCO_ESCO_MASK) |
+					(hdev->esco_type & EDR_ESCO_MASK);
 			hci_setup_sync(conn, conn->link->handle);
 			goto unlock;
 		}

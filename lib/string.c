@@ -23,7 +23,6 @@
 #include <linux/string.h>
 #include <linux/ctype.h>
 #include <linux/module.h>
-#include <linux/memcopy.h>
 
 #ifndef __HAVE_ARCH_STRNICMP
 /**
@@ -338,27 +337,11 @@ char *strnchr(const char *s, size_t count, int c)
 EXPORT_SYMBOL(strnchr);
 #endif
 
-#ifndef __HAVE_ARCH_STRLEN
 /**
- * strlen - Find the length of a string
- * @s: The string to be sized
- */
-size_t strlen(const char *s)
-{
-	const char *sc;
-
-	for (sc = s; *sc != '\0'; ++sc)
-		/* nothing */;
-	return sc - s;
-}
-EXPORT_SYMBOL(strlen);
-#endif
-
-/**
- * skip_spaces - Removes leading whitespace from @str.
- * @str: The string to be stripped.
+ * skip_spaces - Removes leading whitespace from @s.
+ * @s: The string to be stripped.
  *
- * Returns a pointer to the first non-whitespace character in @str.
+ * Returns a pointer to the first non-whitespace character in @s.
  */
 char *skip_spaces(const char *str)
 {
@@ -394,6 +377,22 @@ char *strim(char *s)
 	return s;
 }
 EXPORT_SYMBOL(strim);
+
+#ifndef __HAVE_ARCH_STRLEN
+/**
+ * strlen - Find the length of a string
+ * @s: The string to be sized
+ */
+size_t strlen(const char *s)
+{
+	const char *sc;
+
+	for (sc = s; *sc != '\0'; ++sc)
+		/* nothing */;
+	return sc - s;
+}
+EXPORT_SYMBOL(strlen);
+#endif
 
 #ifndef __HAVE_ARCH_STRNLEN
 /**
@@ -572,12 +571,11 @@ EXPORT_SYMBOL(memset);
  */
 void *memcpy(void *dest, const void *src, size_t count)
 {
-	unsigned long dstp = (unsigned long)dest;
-	unsigned long srcp = (unsigned long)src;
+	char *tmp = dest;
+	const char *s = src;
 
-	/* Copy from the beginning to the end */
-	mem_copy_fwd(dstp, srcp, count);
-
+	while (count--)
+		*tmp++ = *s++;
 	return dest;
 }
 EXPORT_SYMBOL(memcpy);
@@ -594,15 +592,21 @@ EXPORT_SYMBOL(memcpy);
  */
 void *memmove(void *dest, const void *src, size_t count)
 {
-	unsigned long dstp = (unsigned long)dest;
-	unsigned long srcp = (unsigned long)src;
+	char *tmp;
+	const char *s;
 
-	if (dest - src >= count) {
-		/* Copy from the beginning to the end */
-		mem_copy_fwd(dstp, srcp, count);
+	if (dest <= src) {
+		tmp = dest;
+		s = src;
+		while (count--)
+			*tmp++ = *s++;
 	} else {
-		/* Copy from the end to the beginning */
-		mem_copy_bwd(dstp, srcp, count);
+		tmp = dest;
+		tmp += count;
+		s = src;
+		s += count;
+		while (count--)
+			*--tmp = *--s;
 	}
 	return dest;
 }
@@ -663,7 +667,7 @@ EXPORT_SYMBOL(memscan);
  */
 char *strstr(const char *s1, const char *s2)
 {
-	size_t l1, l2;
+	int l1, l2;
 
 	l2 = strlen(s2);
 	if (!l2)
@@ -678,31 +682,6 @@ char *strstr(const char *s1, const char *s2)
 	return NULL;
 }
 EXPORT_SYMBOL(strstr);
-#endif
-
-#ifndef __HAVE_ARCH_STRNSTR
-/**
- * strnstr - Find the first substring in a length-limited string
- * @s1: The string to be searched
- * @s2: The string to search for
- * @len: the maximum number of characters to search
- */
-char *strnstr(const char *s1, const char *s2, size_t len)
-{
-	size_t l1 = len, l2;
-
-	l2 = strlen(s2);
-	if (!l2)
-		return (char *)s1;
-	while (l1 >= l2) {
-		l1--;
-		if (!memcmp(s1, s2, l2))
-			return (char *)s1;
-		s1++;
-	}
-	return NULL;
-}
-EXPORT_SYMBOL(strnstr);
 #endif
 
 #ifndef __HAVE_ARCH_MEMCHR

@@ -170,7 +170,6 @@ typedef elf_fpreg_t elf_vsrreghalf_t32[ELF_NVSRHALFREG];
 #define elf_check_arch(x) ((x)->e_machine == ELF_ARCH)
 #define compat_elf_check_arch(x)	((x)->e_machine == EM_PPC)
 
-#define USE_ELF_CORE_DUMP
 #define CORE_DUMP_USE_REGSET
 #define ELF_EXEC_PAGESIZE	PAGE_SIZE
 
@@ -236,10 +235,14 @@ typedef elf_vrregset_t elf_fpxregset_t;
 #ifdef __powerpc64__
 # define SET_PERSONALITY(ex)					\
 do {								\
+	unsigned long new_flags = 0;				\
 	if ((ex).e_ident[EI_CLASS] == ELFCLASS32)		\
-		set_thread_flag(TIF_32BIT);			\
+		new_flags = _TIF_32BIT;				\
+	if ((current_thread_info()->flags & _TIF_32BIT)		\
+	    != new_flags)					\
+		set_thread_flag(TIF_ABI_PENDING);		\
 	else							\
-		clear_thread_flag(TIF_32BIT);			\
+		clear_thread_flag(TIF_ABI_PENDING);		\
 	if (personality(current->personality) != PER_LINUX32)	\
 		set_personality(PER_LINUX |			\
 			(current->personality & (~PER_MASK)));	\

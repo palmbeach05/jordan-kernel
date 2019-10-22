@@ -204,7 +204,6 @@
 #include <linux/module.h>
 
 #include <linux/poll.h>
-#include <linux/smp_lock.h>
 #include <linux/types.h>
 #include <linux/stddef.h>
 #include <linux/timer.h>
@@ -228,7 +227,6 @@
 #include <linux/suspend.h>
 #include <linux/kthread.h>
 #include <linux/jiffies.h>
-#include <linux/idle.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -237,7 +235,6 @@
 #include <asm/olpc.h>
 #include <asm/paravirt.h>
 #include <asm/reboot.h>
-#include <asm/idle.h>
 
 #if defined(CONFIG_APM_DISPLAY_BLANK) && defined(CONFIG_VT)
 extern int (*console_blank_hook)(int);
@@ -405,6 +402,7 @@ static DECLARE_WAIT_QUEUE_HEAD(apm_waitqueue);
 static DECLARE_WAIT_QUEUE_HEAD(apm_suspend_waitqueue);
 static struct apm_user *user_list;
 static DEFINE_SPINLOCK(user_list_lock);
+static DEFINE_MUTEX(apm_mutex);
 
 /*
  * Set up a segment that references the real mode segment 0x40
@@ -949,17 +947,10 @@ recalc:
 				break;
 			}
 		}
-		enter_idle();
 		if (original_pm_idle)
 			original_pm_idle();
 		else
 			default_idle();
-		/*
-		 * In many cases the interrupt that ended idle
-		 * has already called exit_idle. But some idle
-		 * loops can be woken up without interrupt.
-		 */
-		__exit_idle();
 		local_irq_disable();
 		jiffies_since_last_check = jiffies - last_jiffies;
 		if (jiffies_since_last_check > idle_period)
@@ -1540,7 +1531,7 @@ static long do_ioctl(struct file *filp, u_int cmd, u_long arg)
 		return -EPERM;
 	switch (cmd) {
 	case APM_IOC_STANDBY:
-		lock_kernel();
+		mutex_lock(&apm_mutex);
 		if (as->standbys_read > 0) {
 			as->standbys_read--;
 			as->standbys_pending--;
@@ -1549,10 +1540,10 @@ static long do_ioctl(struct file *filp, u_int cmd, u_long arg)
 			queue_event(APM_USER_STANDBY, as);
 		if (standbys_pending <= 0)
 			standby();
-		unlock_kernel();
+		mutex_unlock(&apm_mutex);
 		break;
 	case APM_IOC_SUSPEND:
-		lock_kernel();
+		mutex_lock(&apm_mutex);
 		if (as->suspends_read > 0) {
 			as->suspends_read--;
 			as->suspends_pending--;
@@ -1561,13 +1552,14 @@ static long do_ioctl(struct file *filp, u_int cmd, u_long arg)
 			queue_event(APM_USER_SUSPEND, as);
 		if (suspends_pending <= 0) {
 			ret = suspend(1);
+			mutex_unlock(&apm_mutex);
 		} else {
 			as->suspend_wait = 1;
+			mutex_unlock(&apm_mutex);
 			wait_event_interruptible(apm_suspend_waitqueue,
 					as->suspend_wait == 0);
 			ret = as->suspend_result;
 		}
-		unlock_kernel();
 		return ret;
 	default:
 		return -ENOTTY;
@@ -1617,12 +1609,10 @@ static int do_open(struct inode *inode, struct file *filp)
 {
 	struct apm_user *as;
 
-	lock_kernel();
 	as = kmalloc(sizeof(*as), GFP_KERNEL);
 	if (as == NULL) {
 		printk(KERN_ERR "apm: cannot allocate struct of size %d bytes\n",
 		       sizeof(*as));
-		       unlock_kernel();
 		return -ENOMEM;
 	}
 	as->magic = APM_BIOS_MAGIC;
@@ -1644,7 +1634,6 @@ static int do_open(struct inode *inode, struct file *filp)
 	user_list = as;
 	spin_unlock(&user_list_lock);
 	filp->private_data = as;
-	unlock_kernel();
 	return 0;
 }
 

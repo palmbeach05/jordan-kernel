@@ -53,7 +53,7 @@ struct sysfs_buffer {
 	size_t			count;
 	loff_t			pos;
 	char			* page;
-	const struct sysfs_ops	* ops;
+	struct sysfs_ops	* ops;
 	struct mutex		mutex;
 	int			needs_read_fill;
 	int			event;
@@ -75,7 +75,7 @@ static int fill_read_buffer(struct dentry * dentry, struct sysfs_buffer * buffer
 {
 	struct sysfs_dirent *attr_sd = dentry->d_fsdata;
 	struct kobject *kobj = attr_sd->s_parent->s_dir.kobj;
-	const struct sysfs_ops * ops = buffer->ops;
+	struct sysfs_ops * ops = buffer->ops;
 	int ret = 0;
 	ssize_t count;
 
@@ -199,7 +199,7 @@ flush_write_buffer(struct dentry * dentry, struct sysfs_buffer * buffer, size_t 
 {
 	struct sysfs_dirent *attr_sd = dentry->d_fsdata;
 	struct kobject *kobj = attr_sd->s_parent->s_dir.kobj;
-	const struct sysfs_ops * ops = buffer->ops;
+	struct sysfs_ops * ops = buffer->ops;
 	int rc;
 
 	/* need attr_sd for attr and ops, its parent for kobj */
@@ -335,7 +335,7 @@ static int sysfs_open_file(struct inode *inode, struct file *file)
 	struct sysfs_dirent *attr_sd = file->f_path.dentry->d_fsdata;
 	struct kobject *kobj = attr_sd->s_parent->s_dir.kobj;
 	struct sysfs_buffer *buffer;
-	const struct sysfs_ops *ops;
+	struct sysfs_ops *ops;
 	int error = -EACCES;
 	char *p;
 
@@ -542,18 +542,6 @@ int sysfs_create_file(struct kobject * kobj, const struct attribute * attr)
 
 }
 
-int sysfs_create_files(struct kobject *kobj, const struct attribute **ptr)
-{
-	int err = 0;
-	int i;
-
-	for (i = 0; ptr[i] && !err; i++)
-		err = sysfs_create_file(kobj, ptr[i]);
-	if (err)
-		while (--i >= 0)
-			sysfs_remove_file(kobj, ptr[i]);
-	return err;
-}
 
 /**
  * sysfs_add_file_to_group - add an attribute file to a pre-existing group.
@@ -591,46 +579,23 @@ EXPORT_SYMBOL_GPL(sysfs_add_file_to_group);
  */
 int sysfs_chmod_file(struct kobject *kobj, struct attribute *attr, mode_t mode)
 {
-	struct sysfs_dirent *victim_sd = NULL;
-	struct dentry *victim = NULL;
-	struct inode * inode;
+	struct sysfs_dirent *sd;
 	struct iattr newattrs;
 	int rc;
 
+	mutex_lock(&sysfs_mutex);
+
 	rc = -ENOENT;
-	victim_sd = sysfs_get_dirent(kobj->sd, attr->name);
-	if (!victim_sd)
+	sd = sysfs_find_dirent(kobj->sd, attr->name);
+	if (!sd)
 		goto out;
 
-	mutex_lock(&sysfs_rename_mutex);
-	victim = sysfs_get_dentry(victim_sd);
-	mutex_unlock(&sysfs_rename_mutex);
-	if (IS_ERR(victim)) {
-		rc = PTR_ERR(victim);
-		victim = NULL;
-		goto out;
-	}
+	newattrs.ia_mode = (mode & S_IALLUGO) | (sd->s_mode & ~S_IALLUGO);
+	newattrs.ia_valid = ATTR_MODE;
+	rc = sysfs_sd_setattr(sd, &newattrs);
 
-	inode = victim->d_inode;
-
-	mutex_lock(&inode->i_mutex);
-
-	newattrs.ia_mode = (mode & S_IALLUGO) | (inode->i_mode & ~S_IALLUGO);
-	newattrs.ia_valid = ATTR_MODE | ATTR_CTIME;
-	newattrs.ia_ctime = current_fs_time(inode->i_sb);
-	rc = sysfs_setattr(victim, &newattrs);
-
-	if (rc == 0) {
-		fsnotify_change(victim, newattrs.ia_valid);
-		mutex_lock(&sysfs_mutex);
-		victim_sd->s_mode = newattrs.ia_mode;
-		mutex_unlock(&sysfs_mutex);
-	}
-
-	mutex_unlock(&inode->i_mutex);
  out:
-	dput(victim);
-	sysfs_put(victim_sd);
+	mutex_unlock(&sysfs_mutex);
 	return rc;
 }
 EXPORT_SYMBOL_GPL(sysfs_chmod_file);
@@ -649,12 +614,6 @@ void sysfs_remove_file(struct kobject * kobj, const struct attribute * attr)
 	sysfs_hash_and_remove(kobj->sd, attr->name);
 }
 
-void sysfs_remove_files(struct kobject * kobj, const struct attribute **ptr)
-{
-	int i;
-	for (i = 0; ptr[i]; i++)
-		sysfs_remove_file(kobj, ptr[i]);
-}
 
 /**
  * sysfs_remove_file_from_group - remove an attribute file from a group.
@@ -773,5 +732,3 @@ EXPORT_SYMBOL_GPL(sysfs_schedule_callback);
 
 EXPORT_SYMBOL_GPL(sysfs_create_file);
 EXPORT_SYMBOL_GPL(sysfs_remove_file);
-EXPORT_SYMBOL_GPL(sysfs_remove_files);
-EXPORT_SYMBOL_GPL(sysfs_create_files);

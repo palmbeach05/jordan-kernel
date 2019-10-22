@@ -25,11 +25,12 @@
 #include <linux/ptrace.h>
 #include <linux/kgdb.h>
 #include <linux/kdebug.h>
-#include <trace/trap.h>
+#include <linux/notifier.h>
 
 #include <asm/bootinfo.h>
 #include <asm/branch.h>
 #include <asm/break.h>
+#include <asm/cop2.h>
 #include <asm/cpu.h>
 #include <asm/dsp.h>
 #include <asm/fpu.h>
@@ -49,12 +50,6 @@
 #include <asm/types.h>
 #include <asm/stacktrace.h>
 #include <asm/irq.h>
-
-/*
- * Also used in unaligned.c and fault.c.
- */
-DEFINE_TRACE(trap_entry);
-DEFINE_TRACE(trap_exit);
 
 extern void check_wait(void);
 extern asmlinkage void r4k_wait(void);
@@ -85,10 +80,6 @@ extern asmlinkage void handle_reserved(void);
 
 extern int fpu_emulator_cop1Handler(struct pt_regs *xcp,
 	struct mips_fpu_struct *ctx, int has_fpu);
-
-#ifdef CONFIG_CPU_CAVIUM_OCTEON
-extern asmlinkage void octeon_cop2_restore(struct octeon_cop2_state *task);
-#endif
 
 void (*board_be_init)(void);
 int (*board_be_handler)(struct pt_regs *regs, int is_fixup);
@@ -320,7 +311,7 @@ static void __show_regs(const struct pt_regs *regs)
 
 	printk("Cause : %08x\n", cause);
 
-	cause = CAUSE_EXCCODE(cause);
+	cause = (cause & CAUSEF_EXCCODE) >> CAUSEB_EXCCODE;
 	if (1 <= cause && cause <= 5)
 		printk("BadVA : %0*lx\n", field, regs->cp0_badvaddr);
 
@@ -650,7 +641,6 @@ asmlinkage void do_fpe(struct pt_regs *regs, unsigned long fcr31)
 		return;
 	die_if_kernel("FP exception in kernel code", regs);
 
-	trace_trap_entry(regs, CAUSE_EXCCODE(regs->cp0_cause));
 	if (fcr31 & FPU_CSR_UNI_X) {
 		int sig;
 
@@ -682,7 +672,7 @@ asmlinkage void do_fpe(struct pt_regs *regs, unsigned long fcr31)
 		/* If something went wrong, signal */
 		if (sig)
 			force_sig(sig, current);
-		trace_trap_exit();
+
 		return;
 	} else if (fcr31 & FPU_CSR_INV_X)
 		info.si_code = FPE_FLTINV;
@@ -700,7 +690,6 @@ asmlinkage void do_fpe(struct pt_regs *regs, unsigned long fcr31)
 	info.si_errno = 0;
 	info.si_addr = (void __user *) regs->cp0_epc;
 	force_sig_info(SIGFPE, &info, current);
-	trace_trap_exit();
 }
 
 static void do_trap_or_bp(struct pt_regs *regs, unsigned int code,
@@ -866,6 +855,44 @@ static void mt_ase_fp_affinity(void)
 #endif /* CONFIG_MIPS_MT_FPAFF */
 }
 
+/*
+ * No lock; only written during early bootup by CPU 0.
+ */
+static RAW_NOTIFIER_HEAD(cu2_chain);
+
+int __ref register_cu2_notifier(struct notifier_block *nb)
+{
+	return raw_notifier_chain_register(&cu2_chain, nb);
+}
+
+int cu2_notifier_call_chain(unsigned long val, void *v)
+{
+	return raw_notifier_call_chain(&cu2_chain, val, v);
+}
+
+static int default_cu2_call(struct notifier_block *nfb, unsigned long action,
+        void *data)
+{
+	struct pt_regs *regs = data;
+
+	switch (action) {
+	default:
+		die_if_kernel("Unhandled kernel unaligned access or invalid "
+			      "instruction", regs);
+		/* Fall through  */
+
+	case CU2_EXCEPTION:
+		force_sig(SIGILL, current);
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block default_cu2_notifier = {
+	.notifier_call	= default_cu2_call,
+	.priority	= 0x80000000,		/* Run last  */
+};
+
 asmlinkage void do_cpu(struct pt_regs *regs)
 {
 	unsigned int __user *epc;
@@ -874,8 +901,6 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 	unsigned int cpid;
 	int status;
 	unsigned long __maybe_unused flags;
-
-	trace_trap_entry(regs, CAUSE_EXCCODE(regs->cp0_cause));
 
 	die_if_kernel("do_cpu invoked from kernel context!", regs);
 
@@ -888,10 +913,8 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 		opcode = 0;
 		status = -1;
 
-		if (unlikely(compute_return_epc(regs) < 0)) {
-			trace_trap_exit();
+		if (unlikely(compute_return_epc(regs) < 0))
 			return;
-		}
 
 		if (unlikely(get_user(opcode, epc) < 0))
 			status = SIGSEGV;
@@ -909,7 +932,7 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 			regs->cp0_epc = old_epc;	/* Undo skip-over.  */
 			force_sig(status, current);
 		}
-		trace_trap_exit();
+
 		return;
 
 	case 1:
@@ -929,27 +952,18 @@ asmlinkage void do_cpu(struct pt_regs *regs)
 			else
 				mt_ase_fp_affinity();
 		}
-		trace_trap_exit();
+
 		return;
 
 	case 2:
-#ifdef CONFIG_CPU_CAVIUM_OCTEON
-		prefetch(&current->thread.cp2);
-		local_irq_save(flags);
-		KSTK_STATUS(current) |= ST0_CU2;
-		status = read_c0_status();
-		write_c0_status(status | ST0_CU2);
-		octeon_cop2_restore(&(current->thread.cp2));
-		write_c0_status(status & ~ST0_CU2);
-		local_irq_restore(flags);
-		return;
-#endif
+		raw_notifier_call_chain(&cu2_chain, CU2_EXCEPTION, regs);
+		break;
+
 	case 3:
 		break;
 	}
 
 	force_sig(SIGILL, current);
-	trace_trap_exit();
 }
 
 asmlinkage void do_mdmx(struct pt_regs *regs)
@@ -1381,77 +1395,6 @@ void *set_vi_handler(int n, vi_handler_t addr)
 	return set_vi_srs_handler(n, addr, 0);
 }
 
-/*
- * This is used by native signal handling
- */
-asmlinkage int (*save_fp_context)(struct sigcontext __user *sc);
-asmlinkage int (*restore_fp_context)(struct sigcontext __user *sc);
-
-extern asmlinkage int _save_fp_context(struct sigcontext __user *sc);
-extern asmlinkage int _restore_fp_context(struct sigcontext __user *sc);
-
-extern asmlinkage int fpu_emulator_save_context(struct sigcontext __user *sc);
-extern asmlinkage int fpu_emulator_restore_context(struct sigcontext __user *sc);
-
-#ifdef CONFIG_SMP
-static int smp_save_fp_context(struct sigcontext __user *sc)
-{
-	return raw_cpu_has_fpu
-	       ? _save_fp_context(sc)
-	       : fpu_emulator_save_context(sc);
-}
-
-static int smp_restore_fp_context(struct sigcontext __user *sc)
-{
-	return raw_cpu_has_fpu
-	       ? _restore_fp_context(sc)
-	       : fpu_emulator_restore_context(sc);
-}
-#endif
-
-static inline void signal_init(void)
-{
-#ifdef CONFIG_SMP
-	/* For now just do the cpu_has_fpu check when the functions are invoked */
-	save_fp_context = smp_save_fp_context;
-	restore_fp_context = smp_restore_fp_context;
-#else
-	if (cpu_has_fpu) {
-		save_fp_context = _save_fp_context;
-		restore_fp_context = _restore_fp_context;
-	} else {
-		save_fp_context = fpu_emulator_save_context;
-		restore_fp_context = fpu_emulator_restore_context;
-	}
-#endif
-}
-
-#ifdef CONFIG_MIPS32_COMPAT
-
-/*
- * This is used by 32-bit signal stuff on the 64-bit kernel
- */
-asmlinkage int (*save_fp_context32)(struct sigcontext32 __user *sc);
-asmlinkage int (*restore_fp_context32)(struct sigcontext32 __user *sc);
-
-extern asmlinkage int _save_fp_context32(struct sigcontext32 __user *sc);
-extern asmlinkage int _restore_fp_context32(struct sigcontext32 __user *sc);
-
-extern asmlinkage int fpu_emulator_save_context32(struct sigcontext32 __user *sc);
-extern asmlinkage int fpu_emulator_restore_context32(struct sigcontext32 __user *sc);
-
-static inline void signal32_init(void)
-{
-	if (cpu_has_fpu) {
-		save_fp_context32 = _save_fp_context32;
-		restore_fp_context32 = _restore_fp_context32;
-	} else {
-		save_fp_context32 = fpu_emulator_save_context32;
-		restore_fp_context32 = fpu_emulator_restore_context32;
-	}
-}
-#endif
-
 extern void cpu_cache_init(void);
 extern void tlb_init(void);
 extern void flush_tlb_handlers(void);
@@ -1765,13 +1708,10 @@ void __init trap_init(void)
 	else
 		memcpy((void *)(ebase + 0x080), &except_vec3_generic, 0x80);
 
-	signal_init();
-#ifdef CONFIG_MIPS32_COMPAT
-	signal32_init();
-#endif
-
 	local_flush_icache_range(ebase, ebase + 0x400);
 	flush_tlb_handlers();
 
 	sort_extable(__start___dbe_table, __stop___dbe_table);
+
+	register_cu2_notifier(&default_cu2_notifier);
 }

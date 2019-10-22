@@ -154,10 +154,7 @@ static struct elevator_type *elevator_get(const char *name)
 
 		spin_unlock(&elv_list_lock);
 
-		if (!strcmp(name, "anticipatory"))
-			sprintf(elv, "as-iosched");
-		else
-			sprintf(elv, "%s-iosched", name);
+		sprintf(elv, "%s-iosched", name);
 
 		request_module("%s", elv);
 		spin_lock(&elv_list_lock);
@@ -193,10 +190,7 @@ static int __init elevator_setup(char *str)
 	 * Be backwards-compatible with previous kernels, so users
 	 * won't get the wrong elevator.
 	 */
-	if (!strcmp(str, "as"))
-		strcpy(chosen_elevator, "anticipatory");
-	else
-		strncpy(chosen_elevator, str, sizeof(chosen_elevator) - 1);
+	strncpy(chosen_elevator, str, sizeof(chosen_elevator) - 1);
 	return 1;
 }
 
@@ -357,7 +351,7 @@ static struct request *elv_rqhash_find(struct request_queue *q, sector_t offset)
  * RB-tree support functions for inserting/lookup/removal of requests
  * in a sorted RB tree.
  */
-void elv_rb_add(struct rb_root *root, struct request *rq)
+struct request *elv_rb_add(struct rb_root *root, struct request *rq)
 {
 	struct rb_node **p = &root->rb_node;
 	struct rb_node *parent = NULL;
@@ -369,12 +363,15 @@ void elv_rb_add(struct rb_root *root, struct request *rq)
 
 		if (blk_rq_pos(rq) < blk_rq_pos(__rq))
 			p = &(*p)->rb_left;
-		else if (blk_rq_pos(rq) >= blk_rq_pos(__rq))
+		else if (blk_rq_pos(rq) > blk_rq_pos(__rq))
 			p = &(*p)->rb_right;
+		else
+			return __rq;
 	}
 
 	rb_link_node(&rq->rb_node, parent, p);
 	rb_insert_color(&rq->rb_node, root);
+	return NULL;
 }
 EXPORT_SYMBOL(elv_rb_add);
 
@@ -886,7 +883,7 @@ elv_attr_store(struct kobject *kobj, struct attribute *attr,
 	return error;
 }
 
-static const struct sysfs_ops elv_sysfs_ops = {
+static struct sysfs_ops elv_sysfs_ops = {
 	.show	= elv_attr_show,
 	.store	= elv_attr_store,
 };

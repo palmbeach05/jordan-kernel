@@ -125,8 +125,8 @@ struct ide_io_ports {
  * Timeouts for various operations:
  */
 enum {
-	/* spec allows up to 20ms */
-	WAIT_DRQ	= HZ / 10,	/* 100ms */
+	/* spec allows up to 20ms, but CF cards and SSD drives need more */
+	WAIT_DRQ	= 1 * HZ,	/* 1s */
 	/* some laptops are very slow */
 	WAIT_READY	= 5 * HZ,	/* 5s */
 	/* should be less than 3ms (?), if all ATAPI CD is closed at boot */
@@ -362,7 +362,7 @@ struct ide_drive_s;
 struct ide_disk_ops {
 	int		(*check)(struct ide_drive_s *, const char *);
 	int		(*get_capacity)(struct ide_drive_s *);
-	void		(*unlock_native_capacity)(struct ide_drive_s *);
+	u64		(*set_capacity)(struct ide_drive_s *, u64);
 	void		(*setup)(struct ide_drive_s *);
 	void		(*flush)(struct ide_drive_s *);
 	int		(*init_media)(struct ide_drive_s *, struct gendisk *);

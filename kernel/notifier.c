@@ -5,7 +5,6 @@
 #include <linux/rcupdate.h>
 #include <linux/vmalloc.h>
 #include <linux/reboot.h>
-#include <linux/idle.h>
 
 /*
  *	Notifier list for kernel code which wants to be called
@@ -149,7 +148,7 @@ int atomic_notifier_chain_unregister(struct atomic_notifier_head *nh,
 	spin_lock_irqsave(&nh->lock, flags);
 	ret = notifier_chain_unregister(&nh->head, n);
 	spin_unlock_irqrestore(&nh->lock, flags);
-	synchronize_sched();
+	synchronize_rcu();
 	return ret;
 }
 EXPORT_SYMBOL_GPL(atomic_notifier_chain_unregister);
@@ -179,9 +178,9 @@ int __kprobes __atomic_notifier_call_chain(struct atomic_notifier_head *nh,
 {
 	int ret;
 
-	rcu_read_lock_sched_notrace();
+	rcu_read_lock();
 	ret = notifier_call_chain(&nh->head, val, v, nr_to_call, nr_calls);
-	rcu_read_unlock_sched_notrace();
+	rcu_read_unlock();
 	return ret;
 }
 EXPORT_SYMBOL_GPL(__atomic_notifier_call_chain);
@@ -559,7 +558,7 @@ EXPORT_SYMBOL(unregister_reboot_notifier);
 
 static ATOMIC_NOTIFIER_HEAD(die_chain);
 
-int notrace notify_die(enum die_val val, const char *str,
+int notrace __kprobes notify_die(enum die_val val, const char *str,
 	       struct pt_regs *regs, long err, int trap, int sig)
 {
 	struct die_args args = {
@@ -585,27 +584,3 @@ int unregister_die_notifier(struct notifier_block *nb)
 	return atomic_notifier_chain_unregister(&die_chain, nb);
 }
 EXPORT_SYMBOL_GPL(unregister_die_notifier);
-
-static ATOMIC_NOTIFIER_HEAD(idle_notifier);
-
-/*
- * Trace last event before calling notifiers. Notifiers flush data from buffers
- * before going to idle.
- */
-int notrace notify_idle(enum idle_val val)
-{
-	return atomic_notifier_call_chain(&idle_notifier, val, NULL);
-}
-EXPORT_SYMBOL_GPL(notify_idle);
-
-void register_idle_notifier(struct notifier_block *n)
-{
-	atomic_notifier_chain_register(&idle_notifier, n);
-}
-EXPORT_SYMBOL_GPL(register_idle_notifier);
-
-void unregister_idle_notifier(struct notifier_block *n)
-{
-	atomic_notifier_chain_unregister(&idle_notifier, n);
-}
-EXPORT_SYMBOL_GPL(unregister_idle_notifier);

@@ -284,7 +284,7 @@ static ssize_t kobj_pkt_store(struct kobject *kobj,
 	return len;
 }
 
-static const struct sysfs_ops kobj_pkt_ops = {
+static struct sysfs_ops kobj_pkt_ops = {
 	.show = kobj_pkt_show,
 	.store = kobj_pkt_store
 };
@@ -322,7 +322,7 @@ static void pkt_sysfs_dev_remove(struct pktcdvd_device *pd)
 	pkt_kobj_remove(pd->kobj_stat);
 	pkt_kobj_remove(pd->kobj_wqueue);
 	if (class_pktcdvd)
-		device_unregister(pd->dev);
+		device_destroy(class_pktcdvd, pd->pkt_dev);
 }
 
 

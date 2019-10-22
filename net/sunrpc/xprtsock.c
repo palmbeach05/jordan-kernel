@@ -81,46 +81,38 @@ static struct ctl_table_header *sunrpc_table_header;
  */
 static ctl_table xs_tunables_table[] = {
 	{
-		.ctl_name	= CTL_SLOTTABLE_UDP,
 		.procname	= "udp_slot_table_entries",
 		.data		= &xprt_udp_slot_table_entries,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_slot_table_size,
 		.extra2		= &max_slot_table_size
 	},
 	{
-		.ctl_name	= CTL_SLOTTABLE_TCP,
 		.procname	= "tcp_slot_table_entries",
 		.data		= &xprt_tcp_slot_table_entries,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_slot_table_size,
 		.extra2		= &max_slot_table_size
 	},
 	{
-		.ctl_name	= CTL_MIN_RESVPORT,
 		.procname	= "min_resvport",
 		.data		= &xprt_min_resvport,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &xprt_min_resvport_limit,
 		.extra2		= &xprt_max_resvport_limit
 	},
 	{
-		.ctl_name	= CTL_MAX_RESVPORT,
 		.procname	= "max_resvport",
 		.data		= &xprt_max_resvport,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &xprt_min_resvport_limit,
 		.extra2		= &xprt_max_resvport_limit
 	},
@@ -129,24 +121,18 @@ static ctl_table xs_tunables_table[] = {
 		.data		= &xs_tcp_fin_timeout,
 		.maxlen		= sizeof(xs_tcp_fin_timeout),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_jiffies,
-		.strategy	= sysctl_jiffies
+		.proc_handler	= proc_dointvec_jiffies,
 	},
-	{
-		.ctl_name = 0,
-	},
+	{ },
 };
 
 static ctl_table sunrpc_table[] = {
 	{
-		.ctl_name	= CTL_SUNRPC,
 		.procname	= "sunrpc",
 		.mode		= 0555,
 		.child		= xs_tunables_table
 	},
-	{
-		.ctl_name = 0,
-	},
+	{ },
 };
 
 #endif
@@ -2033,7 +2019,7 @@ static void xs_connect(struct rpc_task *task)
 	if (xprt_test_and_set_connecting(xprt))
 		return;
 
-	if (transport->sock != NULL) {
+	if (transport->sock != NULL && !RPC_IS_SOFTCONN(task)) {
 		dprintk("RPC:       xs_connect delayed xprt %p for %lu "
 				"seconds\n",
 				xprt, xprt->reestablish_timeout / HZ);
@@ -2619,8 +2605,7 @@ void cleanup_socket_xprt(void)
 	xprt_unregister_transport(&xs_bc_tcp_transport);
 }
 
-static int param_set_uint_minmax(const char *val,
-		const struct kernel_param *kp,
+static int param_set_uint_minmax(const char *val, struct kernel_param *kp,
 		unsigned int min, unsigned int max)
 {
 	unsigned long num;
@@ -2635,37 +2620,34 @@ static int param_set_uint_minmax(const char *val,
 	return 0;
 }
 
-static int param_set_portnr(const char *val, const struct kernel_param *kp)
+static int param_set_portnr(const char *val, struct kernel_param *kp)
 {
 	return param_set_uint_minmax(val, kp,
 			RPC_MIN_RESVPORT,
 			RPC_MAX_RESVPORT);
 }
 
-static struct kernel_param_ops param_ops_portnr = {
-	.set = param_set_portnr,
-	.get = param_get_uint,
-};
-
+static int param_get_portnr(char *buffer, struct kernel_param *kp)
+{
+	return param_get_uint(buffer, kp);
+}
 #define param_check_portnr(name, p) \
 	__param_check(name, p, unsigned int);
 
 module_param_named(min_resvport, xprt_min_resvport, portnr, 0644);
 module_param_named(max_resvport, xprt_max_resvport, portnr, 0644);
 
-static int param_set_slot_table_size(const char *val,
-				     const struct kernel_param *kp)
+static int param_set_slot_table_size(const char *val, struct kernel_param *kp)
 {
 	return param_set_uint_minmax(val, kp,
 			RPC_MIN_SLOT_TABLE,
 			RPC_MAX_SLOT_TABLE);
 }
 
-static struct kernel_param_ops param_ops_slot_table_size = {
-	.set = param_set_slot_table_size,
-	.get = param_get_uint,
-};
-
+static int param_get_slot_table_size(char *buffer, struct kernel_param *kp)
+{
+	return param_get_uint(buffer, kp);
+}
 #define param_check_slot_table_size(name, p) \
 	__param_check(name, p, unsigned int);
 

@@ -35,7 +35,6 @@
 #include <linux/key.h>
 #include <linux/parser.h>
 #include <linux/fs_stack.h>
-#include <linux/ima.h>
 #include "ecryptfs_kernel.h"
 
 /**
@@ -119,7 +118,6 @@ int ecryptfs_init_persistent_file(struct dentry *ecryptfs_dentry)
 	const struct cred *cred = current_cred();
 	struct ecryptfs_inode_info *inode_info =
 		ecryptfs_inode_to_private(ecryptfs_dentry->d_inode);
-	int opened_lower_file = 0;
 	int rc = 0;
 
 	mutex_lock(&inode_info->lower_file_mutex);
@@ -136,12 +134,9 @@ int ecryptfs_init_persistent_file(struct dentry *ecryptfs_dentry)
 			       "for lower_dentry [0x%p] and lower_mnt [0x%p]; "
 			       "rc = [%d]\n", lower_dentry, lower_mnt, rc);
 			inode_info->lower_file = NULL;
-		} else
-			opened_lower_file = 1;
+		}
 	}
 	mutex_unlock(&inode_info->lower_file_mutex);
-	if (opened_lower_file)
-		ima_counts_get(inode_info->lower_file);
 	return rc;
 }
 
@@ -194,7 +189,7 @@ int ecryptfs_interpose(struct dentry *lower_dentry, struct dentry *dentry,
 		init_special_inode(inode, lower_inode->i_mode,
 				   lower_inode->i_rdev);
 	dentry->d_op = &ecryptfs_dops;
-	fsstack_copy_attr_all(inode, lower_inode, NULL);
+	fsstack_copy_attr_all(inode, lower_inode);
 	/* This size will be overwritten for real files w/ headers and
 	 * other metadata */
 	fsstack_copy_inode_size(inode, lower_inode);
@@ -212,8 +207,7 @@ enum { ecryptfs_opt_sig, ecryptfs_opt_ecryptfs_sig,
        ecryptfs_opt_passthrough, ecryptfs_opt_xattr_metadata,
        ecryptfs_opt_encrypted_view, ecryptfs_opt_fnek_sig,
        ecryptfs_opt_fn_cipher, ecryptfs_opt_fn_cipher_key_bytes,
-       ecryptfs_opt_unlink_sigs, ecryptfs_opt_no_new_encrypted,
-       ecryptfs_opt_err };
+       ecryptfs_opt_unlink_sigs, ecryptfs_opt_err };
 
 static const match_table_t tokens = {
 	{ecryptfs_opt_sig, "sig=%s"},
@@ -228,7 +222,6 @@ static const match_table_t tokens = {
 	{ecryptfs_opt_fn_cipher, "ecryptfs_fn_cipher=%s"},
 	{ecryptfs_opt_fn_cipher_key_bytes, "ecryptfs_fn_key_bytes=%u"},
 	{ecryptfs_opt_unlink_sigs, "ecryptfs_unlink_sigs"},
-	{ecryptfs_opt_no_new_encrypted, "no_new_encrypted"},
 	{ecryptfs_opt_err, NULL}
 };
 
@@ -412,9 +405,6 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 		case ecryptfs_opt_unlink_sigs:
 			mount_crypt_stat->flags |= ECRYPTFS_UNLINK_SIGS;
 			break;
-		case ecryptfs_opt_no_new_encrypted:
-			mount_crypt_stat->flags |= ECRYPTFS_NO_NEW_ENCRYPTED;
-			break;
 		case ecryptfs_opt_err:
 		default:
 			printk(KERN_WARNING
@@ -595,8 +585,8 @@ out:
  *                        with as much information as it can before needing
  *                        the lower filesystem.
  * ecryptfs_read_super(): this accesses the lower filesystem and uses
- *                        ecryptfs_interpose to perform most of the linking
- * ecryptfs_interpose(): links the lower filesystem into ecryptfs (inode.c)
+ *                        ecryptfs_interpolate to perform most of the linking
+ * ecryptfs_interpolate(): links the lower filesystem into ecryptfs
  */
 static int ecryptfs_get_sb(struct file_system_type *fs_type, int flags,
 			const char *dev_name, void *raw_data,

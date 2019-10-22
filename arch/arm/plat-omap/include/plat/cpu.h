@@ -44,7 +44,7 @@
 int omap_type(void);
 
 struct omap_chip_id {
-	u16 oc;
+	u8 oc;
 	u8 type;
 };
 
@@ -57,7 +57,6 @@ struct omap_chip_id {
  * CPU class bits (15xx, 16xx, 24xx, 34xx...)	[07:00]
  */
 unsigned int omap_rev(void);
-unsigned int omap_rev_id(void);
 
 /*
  * Define CPU revision bits
@@ -66,8 +65,6 @@ unsigned int omap_rev_id(void);
  * family. This difference can be handled separately.
  */
 #define OMAP_REVBITS_00		0x00
-#define OMAP_REVBITS_01		0x01
-#define OMAP_REVBITS_02		0x02
 #define OMAP_REVBITS_10		0x10
 #define OMAP_REVBITS_20		0x20
 #define OMAP_REVBITS_30		0x30
@@ -179,11 +176,13 @@ IS_OMAP_CLASS(15xx, 0x15)
 IS_OMAP_CLASS(16xx, 0x16)
 IS_OMAP_CLASS(24xx, 0x24)
 IS_OMAP_CLASS(34xx, 0x34)
+IS_OMAP_CLASS(44xx, 0x44)
 
 IS_OMAP_SUBCLASS(242x, 0x242)
 IS_OMAP_SUBCLASS(243x, 0x243)
 IS_OMAP_SUBCLASS(343x, 0x343)
 IS_OMAP_SUBCLASS(363x, 0x363)
+IS_OMAP_SUBCLASS(443x, 0x443)
 
 #define cpu_is_omap7xx()		0
 #define cpu_is_omap15xx()		0
@@ -193,7 +192,6 @@ IS_OMAP_SUBCLASS(363x, 0x363)
 #define cpu_is_omap243x()		0
 #define cpu_is_omap34xx()		0
 #define cpu_is_omap343x()		0
-#define cpu_is_omap3630()		0
 #define cpu_is_omap44xx()		0
 #define cpu_is_omap443x()		0
 
@@ -247,7 +245,6 @@ IS_OMAP_SUBCLASS(363x, 0x363)
 #  undef  cpu_is_omap343x
 #  define cpu_is_omap34xx()		is_omap34xx()
 #  define cpu_is_omap343x()		is_omap343x()
-#  define cpu_is_omap3630()		is_omap363x()
 # endif
 #else
 # if defined(CONFIG_ARCH_OMAP24XX)
@@ -265,8 +262,6 @@ IS_OMAP_SUBCLASS(363x, 0x363)
 # if defined(CONFIG_ARCH_OMAP34XX)
 #  undef  cpu_is_omap34xx
 #  define cpu_is_omap34xx()		1
-#  undef  cpu_is_omap3630
-# define cpu_is_omap3630()		is_omap363x()
 # endif
 # if defined(CONFIG_ARCH_OMAP3430)
 #  undef  cpu_is_omap343x
@@ -293,7 +288,6 @@ IS_OMAP_SUBCLASS(363x, 0x363)
  * cpu_is_omap3430():	True for OMAP3430
  * cpu_is_omap3505():	True for OMAP3505
  * cpu_is_omap3517():	True for OMAP3517
- * cpu_is_omap3630():	True for OMAP3630
  */
 #define GET_OMAP_TYPE	((omap_rev() >> 16) & 0xffff)
 
@@ -340,6 +334,7 @@ IS_OMAP_TYPE(3517, 0x3517)
 #define cpu_is_omap3505()		0
 #define cpu_is_omap3517()		0
 #define cpu_is_omap3430()		0
+#define cpu_is_omap3630()		0
 
 /*
  * Whether we have MULTI_OMAP1 or not, we still need to distinguish
@@ -400,11 +395,11 @@ IS_OMAP_TYPE(3517, 0x3517)
 						(!omap3_has_iva()) &&	\
 						(!omap3_has_sgx()))
 # define cpu_is_omap3515()		(cpu_is_omap3430() &&		\
-						(omap3_has_iva()) &&	\
-						(!omap3_has_sgx()))
+						(!omap3_has_iva()) &&	\
+						(omap3_has_sgx()))
 # define cpu_is_omap3525()		(cpu_is_omap3430() &&		\
-						(omap3_has_sgx()) &&	\
-						(!omap3_has_iva()))
+						(!omap3_has_sgx()) &&	\
+						(omap3_has_iva()))
 # define cpu_is_omap3530()		(cpu_is_omap3430())
 # define cpu_is_omap3505()		is_omap3505()
 # define cpu_is_omap3517()		is_omap3517()
@@ -415,8 +410,8 @@ IS_OMAP_TYPE(3517, 0x3517)
 # if defined(CONFIG_ARCH_OMAP4)
 # undef cpu_is_omap44xx
 # undef cpu_is_omap443x
-# define cpu_is_omap44xx()		1
-# define cpu_is_omap443x()		1
+# define cpu_is_omap44xx()		is_omap44xx()
+# define cpu_is_omap443x()		is_omap443x()
 # endif
 
 /* Macros to detect if we have OMAP1 or OMAP2 */
@@ -439,21 +434,19 @@ IS_OMAP_TYPE(3517, 0x3517)
 #define OMAP3430_REV_ES2_1	0x34302034
 #define OMAP3430_REV_ES3_0	0x34303034
 #define OMAP3430_REV_ES3_1	0x34304034
-#define OMAP3430_REV_ES3_1_1	0x34305034
-
-#define OMAP35XX_CLASS		0x35000034
-#define OMAP3503_REV(v)		(OMAP35XX_CLASS | (0x3503 << 16) | (v << 12))
-#define OMAP3515_REV(v)		(OMAP35XX_CLASS | (0x3515 << 16) | (v << 12))
-#define OMAP3525_REV(v)		(OMAP35XX_CLASS | (0x3525 << 16) | (v << 12))
-#define OMAP3530_REV(v)		(OMAP35XX_CLASS | (0x3530 << 16) | (v << 12))
-#define OMAP3505_REV(v)		(OMAP35XX_CLASS | (0x3505 << 16) | (v << 12))
-#define OMAP3517_REV(v)		(OMAP35XX_CLASS | (0x3517 << 16) | (v << 12))
 
 #define OMAP3630_REV_ES1_0	0x36300034
-#define OMAP3630_REV_ES1_1	0x36300134
-#define OMAP3630_REV_ES1_2	0x36300234
 
-#define OMAP443X_CLASS		0x44300034
+#define OMAP35XX_CLASS		0x35000034
+#define OMAP3503_REV(v)		(OMAP35XX_CLASS | (0x3503 << 16) | (v << 8))
+#define OMAP3515_REV(v)		(OMAP35XX_CLASS | (0x3515 << 16) | (v << 8))
+#define OMAP3525_REV(v)		(OMAP35XX_CLASS | (0x3525 << 16) | (v << 8))
+#define OMAP3530_REV(v)		(OMAP35XX_CLASS | (0x3530 << 16) | (v << 8))
+#define OMAP3505_REV(v)		(OMAP35XX_CLASS | (0x3505 << 16) | (v << 8))
+#define OMAP3517_REV(v)		(OMAP35XX_CLASS | (0x3517 << 16) | (v << 8))
+
+#define OMAP443X_CLASS		0x44300044
+#define OMAP4430_REV_ES1_0	0x44300044
 
 /*
  * omap_chip bits
@@ -476,10 +469,7 @@ IS_OMAP_TYPE(3517, 0x3517)
 #define CHIP_IS_OMAP3430ES2		(1 << 4)
 #define CHIP_IS_OMAP3430ES3_0		(1 << 5)
 #define CHIP_IS_OMAP3430ES3_1		(1 << 6)
-#define CHIP_IS_OMAP3430ES3_1_1 	(1 << 7)
-#define CHIP_IS_OMAP3630ES1		(1 << 8)
-#define CHIP_IS_OMAP3630ES1_1		(1 << 9)
-#define CHIP_IS_OMAP3630ES1_2		(1 << 10)
+#define CHIP_IS_OMAP3630ES1		(1 << 7)
 
 #define CHIP_IS_OMAP24XX		(CHIP_IS_OMAP2420 | CHIP_IS_OMAP2430)
 
@@ -492,28 +482,13 @@ IS_OMAP_TYPE(3517, 0x3517)
 #define CHIP_GE_OMAP3430ES2		(CHIP_IS_OMAP3430ES2 | \
 					 CHIP_IS_OMAP3430ES3_0 | \
 					 CHIP_IS_OMAP3430ES3_1 | \
-					 CHIP_IS_OMAP3430ES3_1_1 |\
 					 CHIP_IS_OMAP3630ES1)
 #define CHIP_GE_OMAP3430ES3_1		(CHIP_IS_OMAP3430ES3_1 | \
-					 CHIP_IS_OMAP3430ES3_1_1 | \
 					 CHIP_IS_OMAP3630ES1)
 
 
-/*
- * Macro to detect omap revision number (for SW tiering */
-#define OMAP_3420	0x3420
-#define OMAP_3430	0x3430
-#define OMAP_3440	0x3440
-#define OMAP_3630	0x3630
-#define OMAP_3630_0800	0x36300800
-#define OMAP_3630_1000	0x36301000
-#define OMAP_3630_1200  0x36301200
-
-int omap_is_SEC(void);
 int omap_chip_is(struct omap_chip_id oci);
 void omap2_check_revision(void);
-void get_omap3630_revision_id(void);
-void omap_l2cache_enable(void);
 
 /*
  * Runtime detection of OMAP3 features

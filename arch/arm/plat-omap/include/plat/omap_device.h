@@ -50,8 +50,8 @@
  * @pm_lats: ptr to an omap_device_pm_latency table
  * @pm_lats_cnt: ARRAY_SIZE() of what is passed to @pm_lats
  * @pm_lat_level: array index of the last odpl entry executed - -1 if never
- * @dev_wakeup_lat: dev wakeup latency in microseconds
- * @_dev_wakeup_lat_limit: dev wakeup latency limit in usec - set by OMAP PM
+ * @dev_wakeup_lat: dev wakeup latency in nanoseconds
+ * @_dev_wakeup_lat_limit: dev wakeup latency limit in nsec - set by OMAP PM
  * @_state: one of OMAP_DEVICE_STATE_* (see above)
  * @flags: device flags
  *
@@ -62,7 +62,6 @@
  *
  */
 struct omap_device {
-	u32                             magic;
 	struct platform_device		pdev;
 	struct omap_hwmod		**hwmods;
 	struct omap_device_pm_latency	*pm_lats;
@@ -82,7 +81,6 @@ int omap_device_shutdown(struct platform_device *pdev);
 
 /* Core code interface */
 
-bool omap_device_is_valid(struct omap_device *od);
 int omap_device_count_resources(struct omap_device *od);
 int omap_device_fill_resources(struct omap_device *od, struct resource *res);
 

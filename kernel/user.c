@@ -18,13 +18,9 @@
 #include <linux/user_namespace.h>
 #include "cred-internals.h"
 
-/*
- * userns count is 1 for root user, 1 for init_uts_ns,
- * and 1 for... ?
- */
 struct user_namespace init_user_ns = {
 	.kref = {
-		.refcount	= ATOMIC_INIT(3),
+		.refcount	= ATOMIC_INIT(2),
 	},
 	.creator = &root_user,
 };
@@ -52,7 +48,7 @@ static struct kmem_cache *uid_cachep;
  */
 static DEFINE_SPINLOCK(uidhash_lock);
 
-/* root_user.__count is 2, 1 for init task cred, 1 for init_user_ns->user_ns */
+/* root_user.__count is 2, 1 for init task cred, 1 for init_user_ns->creator */
 struct user_struct root_user = {
 	.__count	= ATOMIC_INIT(2),
 	.processes	= ATOMIC_INIT(1),

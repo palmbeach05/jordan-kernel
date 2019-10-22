@@ -28,7 +28,6 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/omapfb.h>
-#include <linux/earlysuspend.h>
 
 #include <plat/display.h>
 #include <plat/vram.h>
@@ -55,7 +54,6 @@ module_param_named(test, omapfb_test_pattern, bool, 0644);
 #endif
 
 static int omapfb_fb_init(struct omapfb2_device *fbdev, struct fb_info *fbi);
-static enum omap_color_mode fb_format_to_dss_mode(enum omapfb_color_format fmt);
 
 #ifdef DEBUG
 static void draw_pixel(struct fb_info *fbi, int x, int y, unsigned color)
@@ -701,6 +699,8 @@ int check_fb_var(struct fb_info *fbi, struct fb_var_screeninfo *var)
 			var->xres, var->yres,
 			var->xres_virtual, var->yres_virtual);
 
+	var->height             = -1;
+	var->width              = -1;
 	var->grayscale          = 0;
 
 	if (display && display->get_timings) {
@@ -1034,28 +1034,22 @@ static int omapfb_set_par(struct fb_info *fbi)
 static int omapfb_pan_display(struct fb_var_screeninfo *var,
 		struct fb_info *fbi)
 {
-	struct omap_dss_device *display = fb2display(fbi);
 	struct fb_var_screeninfo new_var;
-	int r = 0;
+	int r;
 
 	DBG("pan_display(%d)\n", FB2OFB(fbi)->id);
 
-	if (var->xoffset != fbi->var.xoffset ||
-	    var->yoffset != fbi->var.yoffset) {
+	if (var->xoffset == fbi->var.xoffset &&
+	    var->yoffset == fbi->var.yoffset)
+		return 0;
 
-		new_var = fbi->var;
-		new_var.xoffset = var->xoffset;
-		new_var.yoffset = var->yoffset;
+	new_var = fbi->var;
+	new_var.xoffset = var->xoffset;
+	new_var.yoffset = var->yoffset;
 
-		fbi->var = new_var;
+	fbi->var = new_var;
 
-		r = omapfb_apply_changes(fbi, 0);
-	}
-
-	if (display && display->update && display->sync) {
-		display->sync(display);
-		display->update(display, 0, 0, var->xres, var->yres);
-	}
+	r = omapfb_apply_changes(fbi, 0);
 
 	return r;
 }
@@ -1409,39 +1403,15 @@ static int omapfb_alloc_fbmem_display(struct fb_info *fbi, unsigned long size,
 		unsigned long paddr)
 {
 	struct omapfb_info *ofbi = FB2OFB(fbi);
-	struct omapfb2_device *fbdev = ofbi->fbdev;
 	struct omap_dss_device *display;
 	int bytespp;
-	int bpp;
 
 	display =  fb2display(fbi);
 
 	if (!display)
 		return 0;
 
-	bpp = display->get_recommended_bpp(display);
-
-	/* update the bpp if the platform data explicity requests a format */
-	if (fbdev->dev->platform_data) {
-		struct omapfb_platform_data *opd;
-		int id = ofbi->id;
-
-		opd = fbdev->dev->platform_data;
-		if (opd->mem_desc.region[id].format_used) {
-			enum omap_color_mode mode;
-			enum omapfb_color_format format;
-			struct fb_var_screeninfo var;
-
-			format = opd->mem_desc.region[id].format;
-			mode = fb_format_to_dss_mode(format);
-			if ((mode >= 0) &&
-				(dss_mode_to_fb_mode(mode, &var) >= 0)) {
-					bpp = var.bits_per_pixel;
-			}
-		}
-	}
-
-	switch (bpp) {
+	switch (display->get_recommended_bpp(display)) {
 	case 16:
 		bytespp = 2;
 		break;
@@ -1465,8 +1435,7 @@ static int omapfb_alloc_fbmem_display(struct fb_info *fbi, unsigned long size,
 			DBG("adjusting fb mem size for VRFB, %u -> %lu\n",
 					w * h * bytespp, size);
 		} else {
-		/* pvr drivers require double buffered fb */
-		size = w * h * bytespp * 2 + 8192;
+			size = w * h * bytespp;
 		}
 	}
 
@@ -1723,41 +1692,6 @@ err:
 	return r;
 }
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-struct suspend_info {
-	struct early_suspend early_suspend;
-	struct fb_info *fbi;
-};
-
-void suspend(struct early_suspend *h)
-{
-	struct suspend_info *info = container_of(h, struct suspend_info,
-						early_suspend);
-	struct fb_info *fbi = info->fbi;
-	struct omap_dss_device *display = fb2display(fbi);
-
-	if (display->suspend)
-		display->suspend(display);
-}
-
-void resume(struct early_suspend *h)
-{
-	struct suspend_info *info = container_of(h, struct suspend_info,
-						early_suspend);
-	struct fb_info *fbi = info->fbi;
-	struct omap_dss_device *display = fb2display(fbi);
-
-	if (display->resume)
-		display->resume(display);
-}
-
-struct suspend_info suspend_info = {
-	.early_suspend.suspend = suspend,
-	.early_suspend.resume = resume,
-	.early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB,
-};
-#endif
-
 /* initialize fb_info, var, fix to something sane based on the display */
 static int omapfb_fb_init(struct omapfb2_device *fbdev, struct fb_info *fbi)
 {
@@ -1810,10 +1744,6 @@ static int omapfb_fb_init(struct omapfb2_device *fbdev, struct fb_info *fbi)
 		u16 w, h;
 		int rotation = (var->rotate + ofbi->rotation[0]) % 4;
 
-		display->get_size(display, &w, &h);
-		var->width = w;
-		var->height = h;
-
 		display->get_resolution(display, &w, &h);
 
 		if (rotation == FB_ROTATE_CW ||
@@ -1864,10 +1794,6 @@ static int omapfb_fb_init(struct omapfb2_device *fbdev, struct fb_info *fbi)
 	r = fb_alloc_cmap(&fbi->cmap, 256, 0);
 	if (r)
 		dev_err(fbdev->dev, "unable to allocate color map memory\n");
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	suspend_info.fbi = fbi;
-	register_early_suspend(&suspend_info.early_suspend);
-#endif
 
 err:
 	return r;
@@ -2245,39 +2171,21 @@ static int omapfb_probe(struct platform_device *pdev)
 
 		/* set the update mode */
 		if (def_display->caps & OMAP_DSS_DISPLAY_CAP_MANUAL_UPDATE) {
-			bool sw_te = false;
-			if (def_display->sw_te_sup)
-				sw_te = def_display->sw_te_sup(def_display);
-
-			if (sw_te == false) {
-				/* Workaround for TE disable on Sage.
-				 * will be removed by CR# IKSTABLETWOV-3732 */
-				if (def_display->panel.panel_id == 0x000a0003) {
-					if (def_display->enable_te)
-						def_display->enable_te(
-							def_display, 0);
-				} else {
-					if (def_display->enable_te)
-						def_display->enable_te(
-							def_display, 1);
-				}
-			} else {
-				if (def_display->enable_te)
-					def_display->enable_te(def_display, 0);
-			}
 #ifdef CONFIG_FB_OMAP2_FORCE_AUTO_UPDATE
+			if (def_display->enable_te)
+				def_display->enable_te(def_display, 1);
 			if (def_display->set_update_mode)
 				def_display->set_update_mode(def_display,
 						OMAP_DSS_UPDATE_AUTO);
 #else /* MANUAL_UPDATE */
+			if (def_display->enable_te)
+				def_display->enable_te(def_display, 0);
 			if (def_display->set_update_mode)
 				def_display->set_update_mode(def_display,
 						OMAP_DSS_UPDATE_MANUAL);
 
 			def_display->get_resolution(def_display, &w, &h);
-#ifndef CONFIG_FB_OMAP_BOOTLOADER_INIT
 			def_display->update(def_display, 0, 0, w, h);
-#endif
 #endif
 		} else {
 			if (def_display->set_update_mode)
@@ -2344,7 +2252,7 @@ module_param_named(mirror, def_mirror, bool, 0);
 /* late_initcall to let panel/ctrl drivers loaded first.
  * I guess better option would be a more dynamic approach,
  * so that omapfb reacts to new panels when they are loaded */
-device_initcall_sync(omapfb_init);
+late_initcall(omapfb_init);
 /*module_init(omapfb_init);*/
 module_exit(omapfb_exit);
 

@@ -39,14 +39,12 @@
 #include <linux/kallsyms.h>
 #include <linux/perf_event.h>
 #include <linux/sched.h>
-#include <trace/timer.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 #include <asm/div64.h>
 #include <asm/timex.h>
 #include <asm/io.h>
-#include <asm/irq_regs.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/timer.h>
@@ -54,10 +52,6 @@
 u64 jiffies_64 __cacheline_aligned_in_smp = INITIAL_JIFFIES;
 
 EXPORT_SYMBOL(jiffies_64);
-
-DEFINE_TRACE(timer_set);
-DEFINE_TRACE(timer_update_time);
-DEFINE_TRACE(timer_timeout);
 
 /*
  * per-CPU timer vector definitions:
@@ -369,7 +363,6 @@ static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 		i = (expires >> (TVR_BITS + 3 * TVN_BITS)) & TVN_MASK;
 		vec = base->tv5.vec + i;
 	}
-	trace_timer_set(timer);
 	/*
 	 * Timers are FIFO:
 	 */
@@ -563,19 +556,6 @@ static void __init_timer(struct timer_list *timer,
 #endif
 	lockdep_init_map(&timer->lockdep_map, name, key, 0);
 }
-
-void setup_deferrable_timer_on_stack_key(struct timer_list *timer,
-					 const char *name,
-					 struct lock_class_key *key,
-					 void (*function)(unsigned long),
-					 unsigned long data)
-{
-	timer->function = function;
-	timer->data = data;
-	init_timer_on_stack_key(timer, name, key);
-	timer_set_deferrable(timer);
-}
-EXPORT_SYMBOL_GPL(setup_deferrable_timer_on_stack_key);
 
 /**
  * init_timer_key - initialize a timer
@@ -1259,7 +1239,6 @@ void do_timer(unsigned long ticks)
 {
 	jiffies_64 += ticks;
 	update_wall_time();
-	trace_timer_update_time(&xtime, &wall_to_monotonic);
 	calc_global_load();
 }
 
@@ -1342,9 +1321,7 @@ SYSCALL_DEFINE0(getegid)
 
 static void process_timeout(unsigned long __data)
 {
-	struct task_struct *task = (struct task_struct *)__data;
-	trace_timer_timeout(task);
-	wake_up_process(task);
+	wake_up_process((struct task_struct *)__data);
 }
 
 /**
@@ -1707,25 +1684,3 @@ unsigned long msleep_interruptible(unsigned int msecs)
 }
 
 EXPORT_SYMBOL(msleep_interruptible);
-
-static int __sched do_usleep_range(unsigned long min, unsigned long max)
-{
-	ktime_t kmin;
-	unsigned long delta;
-
-	kmin = ktime_set(0, min * NSEC_PER_USEC);
-	delta = (max - min) * NSEC_PER_USEC;
-	return schedule_hrtimeout_range(&kmin, delta, HRTIMER_MODE_REL);
-}
-
-/**
- * usleep_range - Drop in replacement for udelay where wakeup is flexible
- * @min: Minimum time in usecs to sleep
- * @max: Maximum time in usecs to sleep
- */
-void usleep_range(unsigned long min, unsigned long max)
-{
-	__set_current_state(TASK_UNINTERRUPTIBLE);
-	do_usleep_range(min, max);
-}
-EXPORT_SYMBOL(usleep_range);

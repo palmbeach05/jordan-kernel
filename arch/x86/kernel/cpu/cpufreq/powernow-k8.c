@@ -1118,7 +1118,7 @@ static int transition_frequency_pstate(struct powernow_k8_data *data,
 static int powernowk8_target(struct cpufreq_policy *pol,
 		unsigned targfreq, unsigned relation)
 {
-	cpumask_t oldmask;
+	cpumask_var_t oldmask;
 	struct powernow_k8_data *data = per_cpu(powernow_data, pol->cpu);
 	u32 checkfid;
 	u32 checkvid;
@@ -1131,9 +1131,13 @@ static int powernowk8_target(struct cpufreq_policy *pol,
 	checkfid = data->currfid;
 	checkvid = data->currvid;
 
-	/* only run on specific CPU from here on */
-	oldmask = current->cpus_allowed;
-	set_cpus_allowed_ptr(current, &cpumask_of_cpu(pol->cpu));
+	/* only run on specific CPU from here on. */
+	/* This is poor form: use a workqueue or smp_call_function_single */
+	if (!alloc_cpumask_var(&oldmask, GFP_KERNEL))
+		return -ENOMEM;
+
+	cpumask_copy(oldmask, tsk_cpus_allowed(current));
+	set_cpus_allowed_ptr(current, cpumask_of(pol->cpu));
 
 	if (smp_processor_id() != pol->cpu) {
 		printk(KERN_ERR PFX "limiting to cpu %u failed\n", pol->cpu);
@@ -1193,7 +1197,8 @@ static int powernowk8_target(struct cpufreq_policy *pol,
 	ret = 0;
 
 err_out:
-	set_cpus_allowed_ptr(current, &oldmask);
+	set_cpus_allowed_ptr(current, oldmask);
+	free_cpumask_var(oldmask);
 	return ret;
 }
 
@@ -1351,7 +1356,6 @@ static int __devexit powernowk8_cpu_exit(struct cpufreq_policy *pol)
 
 	kfree(data->powernow_table);
 	kfree(data);
-	per_cpu(powernow_data, pol->cpu) = NULL;
 
 	return 0;
 }
@@ -1371,7 +1375,7 @@ static unsigned int powernowk8_get(unsigned int cpu)
 	int err;
 
 	if (!data)
-		return 0;
+		return -EINVAL;
 
 	smp_call_function_single(cpu, query_values_on_cpu, &err, true);
 	if (err)

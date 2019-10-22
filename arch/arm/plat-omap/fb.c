@@ -55,6 +55,10 @@ static struct platform_device omap_fb_device = {
 	.num_resources = 0,
 };
 
+void omapfb_set_platform_data(struct omapfb_platform_data *data)
+{
+}
+
 static inline int ranges_overlap(unsigned long start1, unsigned long size1,
 				 unsigned long start2, unsigned long size2)
 {
@@ -167,80 +171,49 @@ static int check_fbmem_region(int region_idx, struct omapfb_mem_region *rg,
 	return 0;
 }
 
-static int valid_sdram(unsigned long addr, unsigned long size)
-{
-<<<<<<< HEAD
-	struct bootmem_data *bdata = NODE_DATA(0)->bdata;
-	unsigned long sdram_start, sdram_end;
-=======
-	struct memblock_region res;
->>>>>>> e3239ff... memblock: Rename memblock_region to memblock_type and memblock_property to memblock_region
-
-	sdram_start = bdata->node_min_pfn << PAGE_SHIFT;
-	sdram_end = bdata->node_low_pfn << PAGE_SHIFT;
-
-	return addr >= sdram_start && sdram_end - addr >= size;
-}
-
-static int reserve_sdram(unsigned long addr, unsigned long size)
-{
-	return reserve_bootmem(addr, size, BOOTMEM_EXCLUSIVE);
-}
-
 /*
  * Called from map_io. We need to call to this early enough so that we
  * can reserve the fixed SDRAM regions before VM could get hold of them.
  */
 void __init omapfb_reserve_sdram(void)
 {
-	unsigned long reserved = 0;
-	int i;
+	struct bootmem_data	*bdata;
+	unsigned long		sdram_start, sdram_size;
+	unsigned long		reserved;
+	int			i;
 
 	if (config_invalid)
 		return;
 
+	bdata = NODE_DATA(0)->bdata;
+	sdram_start = bdata->node_min_pfn << PAGE_SHIFT;
+	sdram_size = (bdata->node_low_pfn << PAGE_SHIFT) - sdram_start;
+	reserved = 0;
 	for (i = 0; ; i++) {
-		struct omapfb_mem_region rg;
+		struct omapfb_mem_region	rg;
 
 		if (get_fbmem_region(i, &rg) < 0)
 			break;
-
 		if (i == OMAPFB_PLANE_NUM) {
-			pr_err("Extraneous FB mem configuration entries\n");
+			printk(KERN_ERR
+				"Extraneous FB mem configuration entries\n");
 			config_invalid = 1;
 			return;
 		}
-
 		/* Check if it's our memory type. */
-		if (rg.type != OMAPFB_MEMTYPE_SDRAM)
+		if (set_fbmem_region_type(&rg, OMAPFB_MEMTYPE_SDRAM,
+				          sdram_start, sdram_size) < 0 ||
+		    (rg.type != OMAPFB_MEMTYPE_SDRAM))
 			continue;
-
-		/* Check if the region falls within SDRAM */
-		if (rg.paddr && !valid_sdram(rg.paddr, rg.size))
-			continue;
-
-		if (rg.size == 0) {
-			pr_err("Zero size for FB region %d\n", i);
+		BUG_ON(omapfb_config.mem_desc.region[i].size);
+		if (check_fbmem_region(i, &rg, sdram_start, sdram_size) < 0) {
 			config_invalid = 1;
 			return;
 		}
-
 		if (rg.paddr) {
-			if (reserve_sdram(rg.paddr, rg.size)) {
-				pr_err("Trying to use reserved memory for FB region %d\n",
-					i);
-				config_invalid = 1;
-				return;
-			}
+			reserve_bootmem(rg.paddr, rg.size, BOOTMEM_DEFAULT);
 			reserved += rg.size;
 		}
-
-		if (omapfb_config.mem_desc.region[i].size) {
-			pr_err("FB region %d already set\n", i);
-			config_invalid = 1;
-			return;
-		}
-
 		omapfb_config.mem_desc.region[i] = rg;
 		configured_regions++;
 	}
@@ -397,6 +370,10 @@ unsigned long omapfb_reserve_sram(unsigned long sram_pstart,
 }
 
 #else
+
+void omapfb_set_platform_data(struct omapfb_platform_data *data)
+{
+}
 
 void omapfb_reserve_sdram(void) {}
 unsigned long omapfb_reserve_sram(unsigned long sram_pstart,

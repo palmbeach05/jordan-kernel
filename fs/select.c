@@ -26,7 +26,6 @@
 #include <linux/fs.h>
 #include <linux/rcupdate.h>
 #include <linux/hrtimer.h>
-#include <trace/fs.h>
 
 #include <asm/uaccess.h>
 
@@ -99,9 +98,6 @@ struct poll_table_page {
 #define POLL_TABLE_FULL(table) \
 	((unsigned long)((table)->entry+1) > PAGE_SIZE + (unsigned long)(table))
 
-DEFINE_TRACE(fs_select);
-DEFINE_TRACE(fs_poll);
-
 /*
  * Ok, Peter made a complicated, but straightforward multiple_wait() function.
  * I have rewritten this, taking some shortcuts: This code may not be easy to
@@ -116,9 +112,6 @@ DEFINE_TRACE(fs_poll);
  */
 static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
 		       poll_table *p);
-static void __pollwait_exclusive(struct file *filp,
-				 wait_queue_head_t *wait_address,
-				 poll_table *p);
 
 void poll_initwait(struct poll_wqueues *pwq)
 {
@@ -158,20 +151,6 @@ void poll_freewait(struct poll_wqueues *pwq)
 	}
 }
 EXPORT_SYMBOL(poll_freewait);
-
-/**
- * poll_wait_set_exclusive - set poll wait queue to exclusive
- *
- * Sets up a poll wait queue to use exclusive wakeups. This is useful to
- * wake up only one waiter at each wakeup. Used to work-around "thundering herd"
- * problem.
- */
-void poll_wait_set_exclusive(poll_table *p)
-{
-	if (p)
-		init_poll_funcptr(p, __pollwait_exclusive);
-}
-EXPORT_SYMBOL(poll_wait_set_exclusive);
 
 static struct poll_table_entry *poll_get_entry(struct poll_wqueues *p)
 {
@@ -234,10 +213,8 @@ static int pollwake(wait_queue_t *wait, unsigned mode, int sync, void *key)
 }
 
 /* Add a new entry */
-static void __pollwait_common(struct file *filp,
-			      wait_queue_head_t *wait_address,
-			      poll_table *p,
-			      int exclusive)
+static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
+				poll_table *p)
 {
 	struct poll_wqueues *pwq = container_of(p, struct poll_wqueues, pt);
 	struct poll_table_entry *entry = poll_get_entry(pwq);
@@ -249,23 +226,7 @@ static void __pollwait_common(struct file *filp,
 	entry->key = p->key;
 	init_waitqueue_func_entry(&entry->wait, pollwake);
 	entry->wait.private = pwq;
-	if (!exclusive)
-		add_wait_queue(wait_address, &entry->wait);
-	else
-		add_wait_queue_exclusive(wait_address, &entry->wait);
-}
-
-static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
-				poll_table *p)
-{
-	__pollwait_common(filp, wait_address, p, 0);
-}
-
-static void __pollwait_exclusive(struct file *filp,
-				 wait_queue_head_t *wait_address,
-				 poll_table *p)
-{
-	__pollwait_common(filp, wait_address, p, 1);
+	add_wait_queue(wait_address, &entry->wait);
 }
 
 int poll_schedule_timeout(struct poll_wqueues *pwq, int state,
@@ -487,7 +448,6 @@ int do_select(int n, fd_set_bits *fds, struct timespec *end_time)
 				file = fget_light(i, &fput_needed);
 				if (file) {
 					f_op = file->f_op;
-					trace_fs_select(i, end_time);
 					mask = DEFAULT_POLLMASK;
 					if (f_op && f_op->poll) {
 						wait_key_set(wait, in, out, bit);
@@ -731,23 +691,6 @@ SYSCALL_DEFINE6(pselect6, int, n, fd_set __user *, inp, fd_set __user *, outp,
 }
 #endif /* HAVE_SET_RESTORE_SIGMASK */
 
-#ifdef __ARCH_WANT_SYS_OLD_SELECT
-struct sel_arg_struct {
-	unsigned long n;
-	fd_set __user *inp, *outp, *exp;
-	struct timeval __user *tvp;
-};
-
-SYSCALL_DEFINE1(old_select, struct sel_arg_struct __user *, arg)
-{
-	struct sel_arg_struct a;
-
-	if (copy_from_user(&a, arg, sizeof(a)))
-		return -EFAULT;
-	return sys_select(a.n, a.inp, a.outp, a.exp, a.tvp);
-}
-#endif
-
 struct poll_list {
 	struct poll_list *next;
 	int len;
@@ -777,7 +720,6 @@ static inline unsigned int do_pollfd(struct pollfd *pollfd, poll_table *pwait)
 		file = fget_light(fd, &fput_needed);
 		mask = POLLNVAL;
 		if (file != NULL) {
-			trace_fs_poll(fd);
 			mask = DEFAULT_POLLMASK;
 			if (file->f_op && file->f_op->poll) {
 				if (pwait)

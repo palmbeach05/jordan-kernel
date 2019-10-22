@@ -254,8 +254,6 @@ unsigned long ra_submit(struct file_ra_state *ra,
 
 /*
  * Set the initial window size, round to next power of 2 and square
- * Small size is not dependant on max value - only a one-page read is regarded	264
- * as small.
  * for small size, x 4 for medium, and x 2 for large
  * for 128k (32 page) max ra
  * 1-8 page = 32k initial, > 8 page = 128k initial
@@ -264,7 +262,7 @@ static unsigned long get_init_ra_size(unsigned long size, unsigned long max)
 {
 	unsigned long newsize = roundup_pow_of_two(size);
 
-	if (newsize <= 1)
+	if (newsize <= max / 32)
 		newsize = newsize * 4;
 	else if (newsize <= max / 4)
 		newsize = newsize * 2;
@@ -503,12 +501,6 @@ void page_cache_sync_readahead(struct address_space *mapping,
 	if (!ra->ra_pages)
 		return;
 
-	/* be dumb */
-	if (filp->f_mode & FMODE_RANDOM) {
-		force_page_cache_readahead(mapping, filp, offset, req_size);
-		return;
-	}
-
 	/* do read-ahead */
 	ondemand_readahead(mapping, ra, filp, false, offset, req_size);
 }
@@ -555,5 +547,17 @@ page_cache_async_readahead(struct address_space *mapping,
 
 	/* do read-ahead */
 	ondemand_readahead(mapping, ra, filp, true, offset, req_size);
+
+#ifdef CONFIG_BLOCK
+	/*
+	 * Normally the current page is !uptodate and lock_page() will be
+	 * immediately called to implicitly unplug the device. However this
+	 * is not always true for RAID conifgurations, where data arrives
+	 * not strictly in their submission order. In this case we need to
+	 * explicitly kick off the IO.
+	 */
+	if (PageUptodate(page))
+		blk_run_backing_dev(mapping->backing_dev_info, NULL);
+#endif
 }
 EXPORT_SYMBOL_GPL(page_cache_async_readahead);

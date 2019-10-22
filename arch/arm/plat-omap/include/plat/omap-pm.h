@@ -30,20 +30,13 @@
 struct omap_opp {
 	unsigned long rate;
 	u8 opp_id;
-	u16 vsel;
-	u16 sr_adjust_vsel;
-	u32 sr_nval;
-	u32 sr_err;
+	u16 min_vdd;
 };
 
 extern struct omap_opp *mpu_opps;
 extern struct omap_opp *dsp_opps;
 extern struct omap_opp *l3_opps;
 
-extern unsigned short get_opp_id(struct omap_opp *opp_freq_table,
-				unsigned long freq);
-extern unsigned short get_opp_from_target_level(struct omap_opp *opp_freq_table,
-						int target_level);
 /*
  * agent_id values for use with omap_pm_set_min_bus_tput():
  *
@@ -65,13 +58,9 @@ extern unsigned short get_opp_from_target_level(struct omap_opp *opp_freq_table,
  * framework starts.  The "_if_" is to avoid name collisions with the
  * PM idle-loop code.
  */
-#ifdef CONFIG_OMAP_PM_NONE
-#define omap_pm_if_early_init(a, b, c) 0
-#else
 int __init omap_pm_if_early_init(struct omap_opp *mpu_opp_table,
 				 struct omap_opp *dsp_opp_table,
 				 struct omap_opp *l3_opp_table);
-#endif
 
 /**
  * omap_pm_if_init - OMAP PM init code called after clock fw init
@@ -79,11 +68,7 @@ int __init omap_pm_if_early_init(struct omap_opp *mpu_opp_table,
  * The main initialization code.  OPP tables are passed in here.  The
  * "_if_" is to avoid name collisions with the PM idle-loop code.
  */
-#ifdef CONFIG_OMAP_PM_NONE
-#define omap_pm_if_init() 0
-#else
 int __init omap_pm_if_init(void);
-#endif
 
 /**
  * omap_pm_if_exit - OMAP PM exit code
@@ -98,15 +83,6 @@ void omap_pm_if_exit(void);
  */
 
 
-/**
- * MPU wakeup latency defines used by omap_pm_set_max_mpu_wakeup_lat function
- * MPU_LATENCY_C1, CORE is always active with this value
- * MPU_LATENCY_C2, MPU and CORE can't hit retention with this value
- * MPU_LATENCY_C3, CORE can't hit retention with this value
- */
-#define MPU_LATENCY_C1          15
-#define MPU_LATENCY_C2          100
-#define MPU_LATENCY_C3          1000
 /**
  * omap_pm_set_max_mpu_wakeup_lat - set the maximum MPU wakeup latency
  * @dev: struct device * requesting the constraint
@@ -249,25 +225,7 @@ const struct omap_opp *omap_pm_dsp_get_opp_table(void);
  * information that code receives from the DSP/BIOS load estimator is the
  * target OPP ID; hence, this interface.  No return value.
  */
-void omap_pm_dsp_set_min_opp(struct device *dev, unsigned long f);
-
-/**
- * omap_pm_vdd1_set_max_opp - receive desired opp_id for VDD1
- * @opp_id: max opp id which VDD1 can scale to
- *
- * Set the max constraint on VDD1 can scale to. Today, SRF only sets
- * constraint in terms of min constraint. This feature is added for
- * some usecase which requires the system to scale to a particular max
- * limit, and needs the max limit to be set dynamically.
- * However, once the max limit is lowered, it doesn't ignore any requests
- * beyond that but honors those request and once the constraint
- * is removed it will fall back to that level considering the current request
- * on the resource.
- *
- * NOTE: This has to be used cautiously else you will end up restraining the
- * system max limit and hence the performance/speed.
- */
-void omap_pm_vdd1_set_max_opp(u8 opp_id);
+void omap_pm_dsp_set_min_opp(u8 opp_id);
 
 /**
  * omap_pm_dsp_get_opp - report the current DSP OPP ID
@@ -281,23 +239,6 @@ void omap_pm_vdd1_set_max_opp(u8 opp_id);
  */
 u8 omap_pm_dsp_get_opp(void);
 
-/**
- * omap_pm_vdd1_get_opp - report the current VDD1 OPP
- *
- * Report the current VDD1 OPP number.
- *
- * Returns the current VDD1 OPP ID, or 0 upon error.
- */
-u8 omap_pm_vdd1_get_opp(void);
-
-/**
- * omap_pm_vdd2_get_opp - report the current VDD2 OPP
- *
- * Report the current VDD2 OPP number.
- *
- * Returns the current VDD2 OPP ID, or 0 upon error.
- */
-u8 omap_pm_vdd2_get_opp(void);
 
 /*
  * CPUFreq-originated constraint
@@ -305,63 +246,6 @@ u8 omap_pm_vdd2_get_opp(void);
  * In the future, this should be handled by custom OPP clocktype
  * functions.
  */
-
-/**
- * omap_pm_get_max_vdd1_opp - get the maximum supported VDD1 OPP number
- *
- * Report the maximum  VDD1 OPP number.
- *
- * Returns the maximum supported VDD1 OPP number.
- */
-u8 omap_pm_get_max_vdd1_opp(void);
-
-
-/**
- * omap_pm_get_min_vdd1_opp - get the minimum supported VDD1 OPP number
- *
- * Report the minimum  VDD1 OPP number.
- *
- * Returns the minimum supported VDD1 OPP number.
- */
-u8 omap_pm_get_min_vdd1_opp(void);
-
-
-/**
- * omap_pm_get_max_vdd2_opp - get the maximum supported VDD2 OPP number
- *
- * Report the maximum  VDD2 OPP number.
- *
- * Returns the maximum supported VDD2 OPP number.
- */
-u8 omap_pm_get_max_vdd2_opp(void);
-
-
-/**
- * omap_pm_get_min_vdd2_opp - get the minimum supported VDD2 OPP number
- *
- * Report the minimum  VDD2 OPP number.
- *
- * Returns the minimum supported VDD2 OPP number.
- */
-u8 omap_pm_get_min_vdd2_opp(void);
-
-/**
- * omap_get_mpu_rate_table - get the mpu OPP table
- *
- * returns mpu rate table.
- *
- * Returns the pointer to rate table
- */
-struct omap_opp *omap_get_mpu_rate_table(void);
-
-/**
- * omap_get_dsp_rate_table - get the dsp OPP table
- *
- * returns dsp rate table.
- *
- * Returns the pointer to rate table
- */
-struct omap_opp *omap_get_dsp_rate_table(void);
 
 /**
  * omap_pm_cpu_get_freq_table - return a cpufreq_frequency_table array ptr
@@ -384,23 +268,12 @@ struct cpufreq_frequency_table **omap_pm_cpu_get_freq_table(void);
 void omap_pm_cpu_set_freq(unsigned long f);
 
 /**
- * omap_pm_set_min_mpu_freq - set the current minimum MPU frequency
- * @f: MPU frequency in Hz
- * @dev: struct device *
- *
- * Set the current minimum CPU frequency.  The actual CPU frequency
- * used could end up higher if the DSP requested a higher OPP.
- * Intended to be called by all Kernel components.  No
- * return value.
- */
-void omap_pm_set_min_mpu_freq(struct device *dev, unsigned long f);
-
-/**
  * omap_pm_cpu_get_freq - report the current CPU frequency
  *
  * Returns the current MPU frequency, or 0 upon error.
  */
 unsigned long omap_pm_cpu_get_freq(void);
+
 
 /*
  * Device context loss tracking

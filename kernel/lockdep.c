@@ -48,10 +48,8 @@
 
 #include "lockdep_internals.h"
 
-#include <trace/lockdep.h>
-
 #define CREATE_TRACE_POINTS
-#include <trace/events/lockdep.h>
+#include <trace/events/lock.h>
 
 #ifdef CONFIG_PROVE_LOCKING
 int prove_locking = 1;
@@ -66,13 +64,6 @@ module_param(lock_stat, int, 0644);
 #else
 #define lock_stat 0
 #endif
-
-DEFINE_TRACE(lockdep_hardirqs_on);
-DEFINE_TRACE(lockdep_hardirqs_off);
-DEFINE_TRACE(lockdep_softirqs_on);
-DEFINE_TRACE(lockdep_softirqs_off);
-DEFINE_TRACE(lockdep_lock_acquire);
-DEFINE_TRACE(lockdep_lock_release);
 
 /*
  * lockdep_lock: protects the lockdep graph, the hashes and the
@@ -149,7 +140,8 @@ static inline struct lock_class *hlock_class(struct held_lock *hlock)
 }
 
 #ifdef CONFIG_LOCK_STAT
-static DEFINE_PER_CPU(struct lock_class_stats[MAX_LOCKDEP_KEYS], lock_stats);
+static DEFINE_PER_CPU(struct lock_class_stats[MAX_LOCKDEP_KEYS],
+		      cpu_lock_stats);
 
 static inline u64 lockstat_clock(void)
 {
@@ -177,7 +169,7 @@ static void lock_time_inc(struct lock_time *lt, u64 time)
 	if (time > lt->max)
 		lt->max = time;
 
-	if (time < lt->min || !lt->min)
+	if (time < lt->min || !lt->nr)
 		lt->min = time;
 
 	lt->total += time;
@@ -186,8 +178,15 @@ static void lock_time_inc(struct lock_time *lt, u64 time)
 
 static inline void lock_time_add(struct lock_time *src, struct lock_time *dst)
 {
-	dst->min += src->min;
-	dst->max += src->max;
+	if (!src->nr)
+		return;
+
+	if (src->max > dst->max)
+		dst->max = src->max;
+
+	if (src->min < dst->min || !dst->nr)
+		dst->min = src->min;
+
 	dst->total += src->total;
 	dst->nr += src->nr;
 }
@@ -200,7 +199,7 @@ struct lock_class_stats lock_stats(struct lock_class *class)
 	memset(&stats, 0, sizeof(struct lock_class_stats));
 	for_each_possible_cpu(cpu) {
 		struct lock_class_stats *pcs =
-			&per_cpu(lock_stats, cpu)[class - lock_classes];
+			&per_cpu(cpu_lock_stats, cpu)[class - lock_classes];
 
 		for (i = 0; i < ARRAY_SIZE(stats.contention_point); i++)
 			stats.contention_point[i] += pcs->contention_point[i];
@@ -227,7 +226,7 @@ void clear_lock_stats(struct lock_class *class)
 
 	for_each_possible_cpu(cpu) {
 		struct lock_class_stats *cpu_stats =
-			&per_cpu(lock_stats, cpu)[class - lock_classes];
+			&per_cpu(cpu_lock_stats, cpu)[class - lock_classes];
 
 		memset(cpu_stats, 0, sizeof(struct lock_class_stats));
 	}
@@ -237,12 +236,12 @@ void clear_lock_stats(struct lock_class *class)
 
 static struct lock_class_stats *get_lock_stats(struct lock_class *class)
 {
-	return &get_cpu_var(lock_stats)[class - lock_classes];
+	return &get_cpu_var(cpu_lock_stats)[class - lock_classes];
 }
 
 static void put_lock_stats(struct lock_class_stats *stats)
 {
-	put_cpu_var(lock_stats);
+	put_cpu_var(cpu_lock_stats);
 }
 
 static void lock_release_holdtime(struct held_lock *hlock)
@@ -388,7 +387,8 @@ static int save_trace(struct stack_trace *trace)
 	 * complete trace that maxes out the entries provided will be reported
 	 * as incomplete, friggin useless </rant>
 	 */
-	if (trace->entries[trace->nr_entries-1] == ULONG_MAX)
+	if (trace->nr_entries != 0 &&
+	    trace->entries[trace->nr_entries-1] == ULONG_MAX)
 		trace->nr_entries--;
 
 	trace->max_entries = trace->nr_entries;
@@ -582,6 +582,9 @@ static int static_obj(void *obj)
 	unsigned long start = (unsigned long) &_stext,
 		      end   = (unsigned long) &_end,
 		      addr  = (unsigned long) obj;
+#ifdef CONFIG_SMP
+	int i;
+#endif
 
 	/*
 	 * static variable?
@@ -592,16 +595,24 @@ static int static_obj(void *obj)
 	if (arch_is_kernel_data(addr))
 		return 1;
 
+#ifdef CONFIG_SMP
 	/*
-	 * in-kernel percpu var?
+	 * percpu var?
 	 */
-	if (is_kernel_percpu_address(addr))
-		return 1;
+	for_each_possible_cpu(i) {
+		start = (unsigned long) &__per_cpu_start + per_cpu_offset(i);
+		end   = (unsigned long) &__per_cpu_start + PERCPU_ENOUGH_ROOM
+					+ per_cpu_offset(i);
+
+		if ((addr >= start) && (addr < end))
+			return 1;
+	}
+#endif
 
 	/*
-	 * module static or percpu var?
+	 * module var?
 	 */
-	return is_module_address(addr) || is_module_percpu_address(addr);
+	return is_module_address(addr);
 }
 
 /*
@@ -2303,8 +2314,6 @@ void trace_hardirqs_on_caller(unsigned long ip)
 
 	time_hardirqs_on(CALLER_ADDR0, ip);
 
-	_trace_lockdep_hardirqs_on(ip);
-
 	if (unlikely(!debug_locks || current->lockdep_recursion))
 		return;
 
@@ -2358,8 +2367,6 @@ void trace_hardirqs_off_caller(unsigned long ip)
 
 	time_hardirqs_off(CALLER_ADDR0, ip);
 
-	_trace_lockdep_hardirqs_off(ip);
-
 	if (unlikely(!debug_locks || current->lockdep_recursion))
 		return;
 
@@ -2391,8 +2398,6 @@ EXPORT_SYMBOL(trace_hardirqs_off);
 void trace_softirqs_on(unsigned long ip)
 {
 	struct task_struct *curr = current;
-
-	_trace_lockdep_softirqs_on(ip);
 
 	if (unlikely(!debug_locks))
 		return;
@@ -2427,8 +2432,6 @@ void trace_softirqs_on(unsigned long ip)
 void trace_softirqs_off(unsigned long ip)
 {
 	struct task_struct *curr = current;
-
-	_trace_lockdep_softirqs_off(ip);
 
 	if (unlikely(!debug_locks))
 		return;
@@ -2729,9 +2732,6 @@ static int __lock_acquire(struct lockdep_map *lock, unsigned int subclass,
 	int chain_head = 0;
 	int class_idx;
 	u64 chain_key;
-
-	_trace_lockdep_lock_acquire(ip, subclass, lock, trylock, read,
-		hardirqs_off);
 
 	if (!prove_locking)
 		check = 1;
@@ -3115,8 +3115,6 @@ static void
 __lock_release(struct lockdep_map *lock, int nested, unsigned long ip)
 {
 	struct task_struct *curr = current;
-
-	_trace_lockdep_lock_release(ip, lock, nested);
 
 	if (!check_unlock(curr, lock, ip))
 		return;

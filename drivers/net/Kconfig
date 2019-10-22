@@ -1001,7 +1001,7 @@ config SMC911X
 
 config SMSC911X
 	tristate "SMSC LAN911x/LAN921x families embedded ethernet support"
-	depends on ARM || SUPERH || BLACKFIN
+	depends on ARM || SUPERH || BLACKFIN || MIPS
 	select CRC32
 	select MII
 	select PHYLIB
@@ -1953,6 +1953,8 @@ config BCM63XX_ENET
 
 source "drivers/net/fs_enet/Kconfig"
 
+source "drivers/net/octeon/Kconfig"
+
 endif # NET_ETHERNET
 
 #
@@ -2696,6 +2698,7 @@ config NETXEN_NIC
 config NIU
 	tristate "Sun Neptune 10Gbit Ethernet support"
 	depends on PCI
+	select CRC32
 	help
 	  This enables support for cards based upon Sun's
 	  Neptune chipset.
@@ -3113,23 +3116,6 @@ config PPPOL2TP
 	  and session setup). One such daemon is OpenL2TP
 	  (http://openl2tp.sourceforge.net/).
 
-config PPPOLAC
-	tristate "PPP on L2TP Access Concentrator"
-	depends on PPP && INET
-	help
-	  L2TP (RFC 2661) is a tunneling protocol widely used in virtual private
-	  networks. This driver handles L2TP data packets between a UDP socket
-	  and a PPP channel, but only permits one session per socket. Thus it is
-	  fairly simple and suited for clients.
-
-config PPPOPNS
-	tristate "PPP on PPTP Network Server"
-	depends on PPP && INET
-	help
-	  PPTP (RFC 2637) is a tunneling protocol widely used in virtual private
-	  networks. This driver handles PPTP data packets between a RAW socket
-	  and a PPP channel. It is fairly simple and easy to use.
-
 config SLIP
 	tristate "SLIP (serial line) support"
 	---help---
@@ -3252,17 +3238,10 @@ config VIRTIO_NET
 
 config VMXNET3
        tristate "VMware VMXNET3 ethernet driver"
-       depends on PCI && X86 && INET
+       depends on PCI && INET
        help
          This driver supports VMware's vmxnet3 virtual ethernet NIC.
          To compile this driver as a module, choose M here: the
          module will be called vmxnet3.
-
-config KINETO_GAN
-       tristate "Kineto GAN virtual network interface"
-       depends on ARM
-       default n
-       help
-       Virtual ethernet interface for Kineto GAN transport.
 
 endif # NETDEVICES

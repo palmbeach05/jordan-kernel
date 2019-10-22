@@ -58,7 +58,7 @@ KERNEL_ATTR_RW(uevent_helper);
 static ssize_t profiling_show(struct kobject *kobj,
 				  struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", _imv_read(prof_on));
+	return sprintf(buf, "%d\n", prof_on);
 }
 static ssize_t profiling_store(struct kobject *kobj,
 				   struct kobj_attribute *attr,
@@ -66,7 +66,7 @@ static ssize_t profiling_store(struct kobject *kobj,
 {
 	int ret;
 
-	if (_imv_read(prof_on))
+	if (prof_on)
 		return -EEXIST;
 	/*
 	 * This eventually calls into get_option() which
@@ -100,6 +100,26 @@ static ssize_t kexec_crash_loaded_show(struct kobject *kobj,
 }
 KERNEL_ATTR_RO(kexec_crash_loaded);
 
+static ssize_t kexec_crash_size_show(struct kobject *kobj,
+				       struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%zu\n", crash_get_memory_size());
+}
+static ssize_t kexec_crash_size_store(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   const char *buf, size_t count)
+{
+	unsigned long cnt;
+	int ret;
+
+	if (strict_strtoul(buf, 0, &cnt))
+		return -EINVAL;
+
+	ret = crash_shrink_memory(cnt);
+	return ret < 0 ? ret : count;
+}
+KERNEL_ATTR_RW(kexec_crash_size);
+
 static ssize_t vmcoreinfo_show(struct kobject *kobj,
 			       struct kobj_attribute *attr, char *buf)
 {
@@ -118,8 +138,7 @@ extern const void __start_notes __attribute__((weak));
 extern const void __stop_notes __attribute__((weak));
 #define	notes_size (&__stop_notes - &__start_notes)
 
-static ssize_t notes_read(struct file *filp, struct kobject *kobj,
-			  struct bin_attribute *bin_attr,
+static ssize_t notes_read(struct kobject *kobj, struct bin_attribute *bin_attr,
 			  char *buf, loff_t off, size_t count)
 {
 	memcpy(buf, &__start_notes + off, count);
@@ -148,6 +167,7 @@ static struct attribute * kernel_attrs[] = {
 #ifdef CONFIG_KEXEC
 	&kexec_loaded_attr.attr,
 	&kexec_crash_loaded_attr.attr,
+	&kexec_crash_size_attr.attr,
 	&vmcoreinfo_attr.attr,
 #endif
 	NULL

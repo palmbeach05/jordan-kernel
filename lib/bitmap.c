@@ -271,54 +271,6 @@ int __bitmap_weight(const unsigned long *bitmap, int bits)
 }
 EXPORT_SYMBOL(__bitmap_weight);
 
-/*
- * Bitmap printing & parsing functions: first version by Bill Irwin,
- * second version by Paul Jackson, third by Joe Korty.
- */
-
-#define CHUNKSZ				32
-#define nbits_to_hold_value(val)	fls(val)
-#define unhex(c)			(isdigit(c) ? (c - '0') : (toupper(c) - 'A' + 10))
-#define BASEDEC 10		/* fancier cpuset lists input in decimal */
-
-/**
- * bitmap_scnprintf - convert bitmap to an ASCII hex string.
- * @buf: byte buffer into which string is placed
- * @buflen: reserved size of @buf, in bytes
- * @maskp: pointer to bitmap to convert
- * @nmaskbits: size of bitmap, in bits
- *
- * Exactly @nmaskbits bits are displayed.  Hex digits are grouped into
- * comma-separated sets of eight digits per set.
- */
-int bitmap_scnprintf(char *buf, unsigned int buflen,
-	const unsigned long *maskp, int nmaskbits)
-{
-	int i, word, bit, len = 0;
-	unsigned long val;
-	const char *sep = "";
-	int chunksz;
-	u32 chunkmask;
-
-	chunksz = nmaskbits & (CHUNKSZ - 1);
-	if (chunksz == 0)
-		chunksz = CHUNKSZ;
-
-	i = ALIGN(nmaskbits, CHUNKSZ) - CHUNKSZ;
-	for (; i >= 0; i -= CHUNKSZ) {
-		chunkmask = ((1ULL << chunksz) - 1);
-		word = i / BITS_PER_LONG;
-		bit = i % BITS_PER_LONG;
-		val = (maskp[word] >> bit) & chunkmask;
-		len += scnprintf(buf+len, buflen-len, "%s%0*lx", sep,
-			(chunksz+3)/4, val);
-		chunksz = CHUNKSZ;
-		sep = ",";
-	}
-	return len;
-}
-EXPORT_SYMBOL(bitmap_scnprintf);
-
 #define BITMAP_FIRST_WORD_MASK(start) (~0UL << ((start) % BITS_PER_LONG))
 
 void bitmap_set(unsigned long *map, int start, int nr)
@@ -399,6 +351,54 @@ again:
 	return index;
 }
 EXPORT_SYMBOL(bitmap_find_next_zero_area);
+
+/*
+ * Bitmap printing & parsing functions: first version by Bill Irwin,
+ * second version by Paul Jackson, third by Joe Korty.
+ */
+
+#define CHUNKSZ				32
+#define nbits_to_hold_value(val)	fls(val)
+#define unhex(c)			(isdigit(c) ? (c - '0') : (toupper(c) - 'A' + 10))
+#define BASEDEC 10		/* fancier cpuset lists input in decimal */
+
+/**
+ * bitmap_scnprintf - convert bitmap to an ASCII hex string.
+ * @buf: byte buffer into which string is placed
+ * @buflen: reserved size of @buf, in bytes
+ * @maskp: pointer to bitmap to convert
+ * @nmaskbits: size of bitmap, in bits
+ *
+ * Exactly @nmaskbits bits are displayed.  Hex digits are grouped into
+ * comma-separated sets of eight digits per set.
+ */
+int bitmap_scnprintf(char *buf, unsigned int buflen,
+	const unsigned long *maskp, int nmaskbits)
+{
+	int i, word, bit, len = 0;
+	unsigned long val;
+	const char *sep = "";
+	int chunksz;
+	u32 chunkmask;
+
+	chunksz = nmaskbits & (CHUNKSZ - 1);
+	if (chunksz == 0)
+		chunksz = CHUNKSZ;
+
+	i = ALIGN(nmaskbits, CHUNKSZ) - CHUNKSZ;
+	for (; i >= 0; i -= CHUNKSZ) {
+		chunkmask = ((1ULL << chunksz) - 1);
+		word = i / BITS_PER_LONG;
+		bit = i % BITS_PER_LONG;
+		val = (maskp[word] >> bit) & chunkmask;
+		len += scnprintf(buf+len, buflen-len, "%s%0*lx", sep,
+			(chunksz+3)/4, val);
+		chunksz = CHUNKSZ;
+		sep = ",";
+	}
+	return len;
+}
+EXPORT_SYMBOL(bitmap_scnprintf);
 
 /**
  * __bitmap_parse - convert an ASCII hex string into a bitmap.

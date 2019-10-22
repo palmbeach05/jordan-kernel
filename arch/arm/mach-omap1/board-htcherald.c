@@ -28,6 +28,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
+#include <linux/bootmem.h>
 #include <linux/io.h>
 #include <linux/gpio.h>
 
@@ -38,6 +39,7 @@
 #include <plat/common.h>
 #include <plat/board.h>
 #include <plat/keypad.h>
+#include <plat/usb.h>
 
 #include <mach/irqs.h>
 
@@ -139,6 +141,15 @@ static struct platform_device kp_device = {
 	.resource	= kp_resources,
 };
 
+/* USB Device */
+static struct omap_usb_config htcherald_usb_config __initdata = {
+	.otg = 0,
+	.register_host = 0,
+	.register_dev  = 1,
+	.hmc_mode = 4,
+	.pins[0] = 2,
+};
+
 /* LCD Device resources */
 static struct platform_device lcd_device = {
 	.name           = "lcd_htcherald",
@@ -213,6 +224,57 @@ static void __init htcherald_disable_watchdog(void)
 	}
 }
 
+#define HTCHERALD_GPIO_USB_EN1 33
+#define HTCHERALD_GPIO_USB_EN2 73
+#define HTCHERALD_GPIO_USB_DM  35
+#define HTCHERALD_GPIO_USB_DP  36
+
+static void __init htcherald_usb_enable(void)
+{
+	unsigned int tries = 20;
+	unsigned int value = 0;
+
+	/* Request the GPIOs we need to control here */
+	if (gpio_request(HTCHERALD_GPIO_USB_EN1, "herald_usb") < 0)
+		goto err1;
+
+	if (gpio_request(HTCHERALD_GPIO_USB_EN2, "herald_usb") < 0)
+		goto err2;
+
+	if (gpio_request(HTCHERALD_GPIO_USB_DM, "herald_usb") < 0)
+		goto err3;
+
+	if (gpio_request(HTCHERALD_GPIO_USB_DP, "herald_usb") < 0)
+		goto err4;
+
+	/* force USB_EN GPIO to 0 */
+	do {
+		/* output low */
+		gpio_direction_output(HTCHERALD_GPIO_USB_EN1, 0);
+	} while ((value = gpio_get_value(HTCHERALD_GPIO_USB_EN1)) == 1 &&
+			--tries);
+
+	if (value == 1)
+		printk(KERN_WARNING "Unable to reset USB, trying to continue\n");
+
+	gpio_direction_output(HTCHERALD_GPIO_USB_EN2, 0); /* output low */
+	gpio_direction_input(HTCHERALD_GPIO_USB_DM); /* input */
+	gpio_direction_input(HTCHERALD_GPIO_USB_DP); /* input */
+
+	goto done;
+
+err4:
+	gpio_free(HTCHERALD_GPIO_USB_DM);
+err3:
+	gpio_free(HTCHERALD_GPIO_USB_EN2);
+err2:
+	gpio_free(HTCHERALD_GPIO_USB_EN1);
+err1:
+	printk(KERN_ERR "Unabled to request GPIO for USB\n");
+done:
+	printk(KERN_INFO "USB setup complete.\n");
+}
+
 static void __init htcherald_init(void)
 {
 	printk(KERN_INFO "HTC Herald init.\n");
@@ -224,6 +286,9 @@ static void __init htcherald_init(void)
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	htcherald_disable_watchdog();
+
+	htcherald_usb_enable();
+	omap_usb_init(&htcherald_usb_config);
 }
 
 static void __init htcherald_init_irq(void)
@@ -240,7 +305,6 @@ MACHINE_START(HERALD, "HTC Herald")
 	.io_pg_offst    = ((0xfef00000) >> 18) & 0xfffc,
 	.boot_params    = 0x10000100,
 	.map_io         = htcherald_map_io,
-	.reserve	= omap_reserve,
 	.init_irq       = htcherald_init_irq,
 	.init_machine   = htcherald_init,
 	.timer          = &omap_timer,

@@ -64,6 +64,7 @@
 #include <linux/magic.h>
 #include <linux/perf_event.h>
 #include <linux/posix-timers.h>
+#include <linux/user-return-notifier.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -85,7 +86,6 @@ int max_threads;		/* tunable limit on nr_threads */
 DEFINE_PER_CPU(unsigned long, process_counts) = 0;
 
 __cacheline_aligned DEFINE_RWLOCK(tasklist_lock);  /* outer */
-EXPORT_SYMBOL(tasklist_lock);
 
 int nr_processes(void)
 {
@@ -139,9 +139,6 @@ struct kmem_cache *vm_area_cachep;
 /* SLAB cache for mm_struct structures (tsk->mm) */
 static struct kmem_cache *mm_cachep;
 
-/* Notifier list called when a task struct is freed */
-static ATOMIC_NOTIFIER_HEAD(task_free_notifier);
-
 static void account_kernel_stack(struct thread_info *ti, int account)
 {
 	struct zone *zone = page_zone(virt_to_page(ti));
@@ -160,18 +157,6 @@ void free_task(struct task_struct *tsk)
 }
 EXPORT_SYMBOL(free_task);
 
-int task_free_register(struct notifier_block *n)
-{
-	return atomic_notifier_chain_register(&task_free_notifier, n);
-}
-EXPORT_SYMBOL(task_free_register);
-
-int task_free_unregister(struct notifier_block *n)
-{
-	return atomic_notifier_chain_unregister(&task_free_notifier, n);
-}
-EXPORT_SYMBOL(task_free_unregister);
-
 void __put_task_struct(struct task_struct *tsk)
 {
 	WARN_ON(!tsk->exit_state);
@@ -181,7 +166,6 @@ void __put_task_struct(struct task_struct *tsk)
 	exit_creds(tsk);
 	delayacct_tsk_free(tsk);
 
-	atomic_notifier_call_chain(&task_free_notifier, 0, tsk);
 	if (!profile_handoff_task(tsk))
 		free_task(tsk);
 }
@@ -266,6 +250,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 		goto out;
 
 	setup_thread_stack(tsk, orig);
+	clear_user_return_notifier(tsk);
 	stackend = end_of_stack(tsk);
 	*stackend = STACK_END_MAGIC;	/* for overflow detection */
 
@@ -343,17 +328,15 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 		if (!tmp)
 			goto fail_nomem;
 		*tmp = *mpnt;
-		INIT_LIST_HEAD(&tmp->anon_vma_chain);
 		pol = mpol_dup(vma_policy(mpnt));
 		retval = PTR_ERR(pol);
 		if (IS_ERR(pol))
 			goto fail_nomem_policy;
 		vma_set_policy(tmp, pol);
-		if (anon_vma_fork(tmp, mpnt))
-			goto fail_nomem_anon_vma_fork;
 		tmp->vm_flags &= ~VM_LOCKED;
 		tmp->vm_mm = mm;
 		tmp->vm_next = NULL;
+		anon_vma_link(tmp);
 		file = tmp->vm_file;
 		if (file) {
 			struct inode *inode = file->f_path.dentry->d_inode;
@@ -408,8 +391,6 @@ out:
 	flush_tlb_mm(oldmm);
 	up_write(&oldmm->mmap_sem);
 	return retval;
-fail_nomem_anon_vma_fork:
-	mpol_put(pol);
 fail_nomem_policy:
 	kmem_cache_free(vm_area_cachep, tmp);
 fail_nomem:
@@ -473,7 +454,8 @@ static struct mm_struct * mm_init(struct mm_struct * mm, struct task_struct *p)
 		(current->mm->flags & MMF_INIT_MASK) : default_dump_filter;
 	mm->core_state = NULL;
 	mm->nr_ptes = 0;
-	memset(&mm->rss_stat, 0, sizeof(mm->rss_stat));
+	set_mm_counter(mm, file_rss, 0);
+	set_mm_counter(mm, anon_rss, 0);
 	spin_lock_init(&mm->page_table_lock);
 	mm->free_area_cache = TASK_UNMAPPED_BASE;
 	mm->cached_hole_size = ~0UL;
@@ -926,11 +908,6 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 	tty_audit_fork(sig);
 
 	sig->oom_adj = current->signal->oom_adj;
-	sig->oom_score_adj = current->signal->oom_score_adj;
-
-	sig->has_child_subreaper = current->signal->has_child_subreaper ||
-				   current->signal->is_child_subreaper;
-
 
 	return 0;
 }
@@ -1084,7 +1061,6 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&p->children);
 	INIT_LIST_HEAD(&p->sibling);
 	rcu_copy_process(p);
-	INIT_RCU_HEAD(&p->rcu);
 	p->vfork_done = NULL;
 	spin_lock_init(&p->alloc_lock);
 
@@ -1266,13 +1242,19 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	write_lock_irq(&tasklist_lock);
 
 	/*
-	 * The state of the parent's TIF_KTRACE flag may have changed
-	 * since it was copied in dup_task_struct() so we re-copy it here.
+	 * The task hasn't been attached yet, so its cpus_allowed mask will
+	 * not be changed, nor will its assigned CPU.
+	 *
+	 * The cpus_allowed mask of the parent may have changed after it was
+	 * copied first time - so re-copy it here, then check the child's CPU
+	 * to ensure it is on a valid CPU (and if not, just force it back to
+	 * parent's CPU). This avoids alot of nasty races.
 	 */
-	if (test_thread_flag(TIF_KERNEL_TRACE))
-		set_tsk_thread_flag(p, TIF_KERNEL_TRACE);
-	else
-		clear_tsk_thread_flag(p, TIF_KERNEL_TRACE);
+	p->cpus_allowed = current->cpus_allowed;
+	p->rt.nr_cpus_allowed = current->rt.nr_cpus_allowed;
+	if (unlikely(!cpu_isset(task_cpu(p), p->cpus_allowed) ||
+			!cpu_online(task_cpu(p))))
+		set_task_cpu(p, smp_processor_id());
 
 	/* CLONE_PARENT re-uses the old parent */
 	if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {

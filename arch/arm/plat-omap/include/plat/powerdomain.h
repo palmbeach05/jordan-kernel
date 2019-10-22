@@ -28,6 +28,8 @@
 #define PWRDM_POWER_INACTIVE	0x2
 #define PWRDM_POWER_ON		0x3
 
+#define PWRDM_MAX_PWRSTS	4
+
 /* Powerdomain allowable state bitfields */
 #define PWRSTS_OFF_ON		((1 << PWRDM_POWER_OFF) | \
 				 (1 << PWRDM_POWER_ON))
@@ -56,11 +58,6 @@
  * CORE powerdomain on OMAP3 is the worst case
  */
 #define PWRDM_MAX_CLKDMS	4
-/*
- * Maximum number of FCLK register masks that can be associated with a
- * powerdomain. CORE powerdomain on OMAP3 is the worst case
- */
-#define PWRDM_MAX_FCLK		2
 
 /* XXX A completely arbitrary number. What is reasonable here? */
 #define PWRDM_TRANSITION_BAILOUT 100000
@@ -93,14 +90,14 @@ struct powerdomain {
 	/* Used to represent the OMAP chip types containing this pwrdm */
 	const struct omap_chip_id omap_chip;
 
-	/* Bit shift of this powerdomain's PM_WKDEP/CM_SLEEPDEP bit */
-	const u8 dep_bit;
-
 	/* Powerdomains that can be told to wake this powerdomain up */
 	struct pwrdm_dep *wkdep_srcs;
 
 	/* Powerdomains that can be told to keep this pwrdm from inactivity */
 	struct pwrdm_dep *sleepdep_srcs;
+
+	/* Bit shift of this powerdomain's PM_WKDEP/CM_SLEEPDEP bit */
+	const u8 dep_bit;
 
 	/* Possible powerdomain power states */
 	const u8 pwrsts;
@@ -126,13 +123,11 @@ struct powerdomain {
 	struct list_head node;
 
 	int state;
-	unsigned state_counter[4];
+	unsigned state_counter[PWRDM_MAX_PWRSTS];
 
-	u8 fclk_reg_amt;
-	u32 fclk_masks[PWRDM_MAX_FCLK];
 #ifdef CONFIG_PM_DEBUG
 	s64 timer;
-	s64 state_timer[4];
+	s64 state_timer[PWRDM_MAX_PWRSTS];
 #endif
 };
 
@@ -183,7 +178,6 @@ int pwrdm_disable_hdwr_sar(struct powerdomain *pwrdm);
 bool pwrdm_has_hdwr_sar(struct powerdomain *pwrdm);
 
 int pwrdm_wait_transition(struct powerdomain *pwrdm);
-int pwrdm_can_idle(struct powerdomain *pwrdm);
 
 int pwrdm_state_switch(struct powerdomain *pwrdm);
 int pwrdm_clkdm_state_switch(struct clockdomain *clkdm);

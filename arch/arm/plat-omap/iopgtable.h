@@ -35,9 +35,7 @@
 
 #define IOPGD_TABLE		(1 << 0)
 #define IOPGD_SECTION		(2 << 0)
-#define IOPGD_SUPER		(1 << 18)
-
-#define iopgd_is_table(x)	(((x) & 3) == IOPGD_TABLE)
+#define IOPGD_SUPER		(1 << 18 | 2 << 0)
 
 #define IOPTE_SMALL		(2 << 0)
 #define IOPTE_LARGE		(1 << 0)
@@ -45,11 +43,11 @@
 #define iopgd_index(da)		(((da) >> IOPGD_SHIFT) & (PTRS_PER_IOPGD - 1))
 #define iopgd_offset(obj, da)	((obj)->iopgd + iopgd_index(da))
 
-#define iopgd_page_paddr(iopgd)	(*iopgd & ~((1 << 10) - 1))
-#define iopgd_page_vaddr(iopgd)	((u32 *)phys_to_virt(iopgd_page_paddr(iopgd)))
+#define iopte_paddr(iopgd)	(*iopgd & ~((1 << 10) - 1))
+#define iopte_vaddr(iopgd)	((u32 *)phys_to_virt(iopte_paddr(iopgd)))
 
 #define iopte_index(da)		(((da) >> IOPTE_SHIFT) & (PTRS_PER_IOPTE - 1))
-#define iopte_offset(iopgd, da)	(iopgd_page_vaddr(iopgd) + iopte_index(da))
+#define iopte_offset(iopgd, da)	(iopte_vaddr(iopgd) + iopte_index(da))
 
 static inline u32 iotlb_init_entry(struct iotlb_entry *e, u32 da, u32 pa,
 				   u32 flags)

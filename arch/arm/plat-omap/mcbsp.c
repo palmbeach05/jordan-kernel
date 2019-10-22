@@ -194,7 +194,6 @@ void omap_mcbsp_config(unsigned int id, const struct omap_mcbsp_reg_cfg *config)
 	if (cpu_is_omap2430() || cpu_is_omap34xx() || cpu_is_omap44xx()) {
 		OMAP_MCBSP_WRITE(io_base, XCCR, config->xccr);
 		OMAP_MCBSP_WRITE(io_base, RCCR, config->rccr);
-		OMAP_MCBSP_WRITE(io_base, WAKEUPEN, config->wken);
 	}
 }
 EXPORT_SYMBOL(omap_mcbsp_config);
@@ -437,7 +436,7 @@ int omap_mcbsp_request(unsigned int id)
 			dev_err(mcbsp->dev, "Unable to request TX IRQ %d "
 					"for McBSP%d\n", mcbsp->tx_irq,
 					mcbsp->id);
-			goto error;
+			return err;
 		}
 
 		init_completion(&mcbsp->rx_irq_completion);
@@ -447,26 +446,12 @@ int omap_mcbsp_request(unsigned int id)
 			dev_err(mcbsp->dev, "Unable to request RX IRQ %d "
 					"for McBSP%d\n", mcbsp->rx_irq,
 					mcbsp->id);
-			goto tx_irq;
+			free_irq(mcbsp->tx_irq, (void *)mcbsp);
+			return err;
 		}
 	}
 
 	return 0;
-tx_irq:
-	free_irq(mcbsp->tx_irq, (void *)mcbsp);
-error:
-	if (mcbsp->pdata && mcbsp->pdata->ops && mcbsp->pdata->ops->free)
-			mcbsp->pdata->ops->free(id);
-
-	/* Do procedure specific to omap34xx arch, if applicable */
-	omap34xx_mcbsp_free(mcbsp);
-
-	clk_disable(mcbsp->fclk);
-	clk_disable(mcbsp->iclk);
-
-	mcbsp->free = 1;
-
-	return err;
 }
 EXPORT_SYMBOL(omap_mcbsp_request);
 

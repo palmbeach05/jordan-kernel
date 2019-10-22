@@ -10,7 +10,6 @@
  * Version 2.  See the file COPYING for more details.
  */
 
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/bitmap.h>
 #include <linux/genalloc.h>
@@ -39,20 +38,17 @@ struct gen_pool *gen_pool_create(int min_alloc_order, int nid)
 EXPORT_SYMBOL(gen_pool_create);
 
 /**
- * gen_pool_add_virt - add a new chunk of special memory to the pool
+ * gen_pool_add - add a new chunk of special memory to the pool
  * @pool: pool to add new memory chunk to
- * @virt: virtual starting address of memory chunk to add to pool
- * @phys: physical starting address of memory chunk to add to pool
+ * @addr: starting address of memory chunk to add to pool
  * @size: size in bytes of the memory chunk to add to pool
  * @nid: node id of the node the chunk structure and bitmap should be
  *       allocated on, or -1
  *
  * Add a new chunk of special memory to the specified pool.
- *
- * Returns 0 on success or a -ve errno on failure.
  */
-int gen_pool_add_virt(struct gen_pool *pool, unsigned long virt, phys_addr_t phys,
-		 size_t size, int nid)
+int gen_pool_add(struct gen_pool *pool, unsigned long addr, size_t size,
+		 int nid)
 {
 	struct gen_pool_chunk *chunk;
 	int nbits = size >> pool->min_alloc_order;
@@ -61,12 +57,11 @@ int gen_pool_add_virt(struct gen_pool *pool, unsigned long virt, phys_addr_t phy
 
 	chunk = kmalloc_node(nbytes, GFP_KERNEL | __GFP_ZERO, nid);
 	if (unlikely(chunk == NULL))
-		return -ENOMEM;
+		return -1;
 
 	spin_lock_init(&chunk->lock);
-	chunk->phys_addr = phys;
-	chunk->start_addr = virt;
-	chunk->end_addr = virt + size;
+	chunk->start_addr = addr;
+	chunk->end_addr = addr + size;
 
 	write_lock(&pool->lock);
 	list_add(&chunk->next_chunk, &pool->chunks);
@@ -74,32 +69,7 @@ int gen_pool_add_virt(struct gen_pool *pool, unsigned long virt, phys_addr_t phy
 
 	return 0;
 }
-EXPORT_SYMBOL(gen_pool_add_virt);
-
-/**
- * gen_pool_virt_to_phys - return the physical address of memory
- * @pool: pool to allocate from
- * @addr: starting address of memory
- *
- * Returns the physical address on success, or -1 on error.
- */
-phys_addr_t gen_pool_virt_to_phys(struct gen_pool *pool, unsigned long addr)
-{
-	struct list_head *_chunk;
-	struct gen_pool_chunk *chunk;
-
-	read_lock(&pool->lock);
-	list_for_each(_chunk, &pool->chunks) {
-		chunk = list_entry(_chunk, struct gen_pool_chunk, next_chunk);
-
-		if (addr >= chunk->start_addr && addr < chunk->end_addr)
-			return chunk->phys_addr + addr - chunk->start_addr;
-	}
-	read_unlock(&pool->lock);
-
-	return -1;
-}
-EXPORT_SYMBOL(gen_pool_virt_to_phys);
+EXPORT_SYMBOL(gen_pool_add);
 
 /**
  * gen_pool_destroy - destroy a special memory pool
@@ -157,6 +127,7 @@ unsigned long gen_pool_alloc(struct gen_pool *pool, size_t size)
 		chunk = list_entry(_chunk, struct gen_pool_chunk, next_chunk);
 
 		end_bit = (chunk->end_addr - chunk->start_addr) >> order;
+		end_bit -= nbits + 1;
 
 		spin_lock_irqsave(&chunk->lock, flags);
 		start_bit = bitmap_find_next_zero_area(chunk->bits, end_bit, 0,

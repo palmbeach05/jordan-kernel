@@ -24,14 +24,11 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/io.h>
-#include <trace/sched.h>
 #include <asm/syscalls.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
 #include <asm/fpu.h>
-
-DEFINE_TRACE(sched_kthread_create);
 
 struct task_struct *last_task_used_math = NULL;
 
@@ -325,7 +322,6 @@ ATTRIB_NORET void kernel_thread_helper(void *arg, int (*fn)(void *))
  */
 int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 {
-	int pid;
 	struct pt_regs regs;
 
 	memset(&regs, 0, sizeof(regs));
@@ -336,13 +332,10 @@ int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 	regs.sr = (1 << 30);
 
 	/* Ok, create the new process.. */
-	pid = do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0,
+	return do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0,
 		      &regs, 0, NULL, NULL);
-
-	trace_sched_kthread_create(fn, pid);
-
-	return pid;
 }
+EXPORT_SYMBOL(kernel_thread);
 
 /*
  * Free current thread data structures etc..
@@ -375,7 +368,7 @@ void exit_thread(void)
 void flush_thread(void)
 {
 
-	/* Called by fs/exec.c (setup_new_exec) to remove traces of a
+	/* Called by fs/exec.c (flush_old_exec) to remove traces of a
 	 * previously running executable. */
 #ifdef CONFIG_SH_FPU
 	if (last_task_used_math == current) {
@@ -411,7 +404,7 @@ int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
 	if (fpvalid) {
 		if (current == last_task_used_math) {
 			enable_fpu();
-			save_fpu(tsk, regs);
+			save_fpu(tsk);
 			disable_fpu();
 			last_task_used_math = 0;
 			regs->sr |= SR_FD;
@@ -425,6 +418,7 @@ int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
 	return 0; /* Task didn't use the fpu at all. */
 #endif
 }
+EXPORT_SYMBOL(dump_fpu);
 
 asmlinkage void ret_from_fork(void);
 
@@ -437,7 +431,7 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 #ifdef CONFIG_SH_FPU
 	if(last_task_used_math == current) {
 		enable_fpu();
-		save_fpu(current, regs);
+		save_fpu(current);
 		disable_fpu();
 		last_task_used_math = NULL;
 		regs->sr |= SR_FD;

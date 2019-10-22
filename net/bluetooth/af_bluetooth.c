@@ -41,20 +41,11 @@
 
 #include <net/bluetooth/bluetooth.h>
 
-#ifdef CONFIG_ANDROID_PARANOID_NETWORK
-#include <linux/android_aid.h>
-#endif
-
-#ifndef CONFIG_BT_SOCK_DEBUG
-#undef  BT_DBG
-#define BT_DBG(D...)
-#endif
-
 #define VERSION "2.15"
 
 /* Bluetooth sockets */
 #define BT_MAX_PROTO	8
-static struct net_proto_family *bt_proto[BT_MAX_PROTO];
+static const struct net_proto_family *bt_proto[BT_MAX_PROTO];
 static DEFINE_RWLOCK(bt_proto_lock);
 
 static struct lock_class_key bt_lock_key[BT_MAX_PROTO];
@@ -95,7 +86,7 @@ static inline void bt_sock_reclassify_lock(struct socket *sock, int proto)
 				bt_key_strings[proto], &bt_lock_key[proto]);
 }
 
-int bt_sock_register(int proto, struct net_proto_family *ops)
+int bt_sock_register(int proto, const struct net_proto_family *ops)
 {
 	int err = 0;
 
@@ -135,38 +126,10 @@ int bt_sock_unregister(int proto)
 }
 EXPORT_SYMBOL(bt_sock_unregister);
 
-#ifdef CONFIG_ANDROID_PARANOID_NETWORK
-static inline int current_has_bt_admin(void)
-{
-	return (!current_euid() || in_egroup_p(AID_NET_BT_ADMIN));
-}
-
-static inline int current_has_bt(void)
-{
-	return (current_has_bt_admin() || in_egroup_p(AID_NET_BT));
-}
-# else
-static inline int current_has_bt_admin(void)
-{
-	return 1;
-}
-
-static inline int current_has_bt(void)
-{
-	return 1;
-}
-#endif
-
-static int bt_sock_create(struct net *net, struct socket *sock, int proto)
+static int bt_sock_create(struct net *net, struct socket *sock, int proto,
+			  int kern)
 {
 	int err;
-
-	if (proto == BTPROTO_RFCOMM || proto == BTPROTO_SCO ||
-			proto == BTPROTO_L2CAP) {
-		if (!current_has_bt())
-			return -EPERM;
-	} else if (!current_has_bt_admin())
-		return -EPERM;
 
 	if (net != &init_net)
 		return -EAFNOSUPPORT;
@@ -182,7 +145,7 @@ static int bt_sock_create(struct net *net, struct socket *sock, int proto)
 	read_lock(&bt_proto_lock);
 
 	if (bt_proto[proto] && try_module_get(bt_proto[proto]->owner)) {
-		err = bt_proto[proto]->create(net, sock, proto);
+		err = bt_proto[proto]->create(net, sock, proto, kern);
 		bt_sock_reclassify_lock(sock, proto);
 		module_put(bt_proto[proto]->owner);
 	}

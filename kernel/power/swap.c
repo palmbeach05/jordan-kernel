@@ -28,40 +28,6 @@
 
 #define SWSUSP_SIG	"S1SUSPEND"
 
-/*
- *	The swap map is a data structure used for keeping track of each page
- *	written to a swap partition.  It consists of many swap_map_page
- *	structures that contain each an array of MAP_PAGE_SIZE swap entries.
- *	These structures are stored on the swap and linked together with the
- *	help of the .next_swap member.
- *
- *	The swap map is created during suspend.  The swap map pages are
- *	allocated and populated one at a time, so we only need one memory
- *	page to set up the entire structure.
- *
- *	During resume we also only need to use one swap_map_page structure
- *	at a time.
- */
-
-#define MAP_PAGE_ENTRIES	(PAGE_SIZE / sizeof(sector_t) - 1)
-
-struct swap_map_page {
-	sector_t entries[MAP_PAGE_ENTRIES];
-	sector_t next_swap;
-};
-
-/**
- *	The swap_map_handle structure is used for handling swap in
- *	a file-alike way
- */
-
-struct swap_map_handle {
-	struct swap_map_page *cur;
-	sector_t cur_swap;
-	sector_t first_sector;
-	unsigned int k;
-};
-
 struct swsusp_header {
 	char reserved[PAGE_SIZE - 20 - sizeof(sector_t) - sizeof(int)];
 	sector_t image;
@@ -178,24 +144,110 @@ int swsusp_swap_in_use(void)
  */
 
 static unsigned short root_swap = 0xffff;
-struct block_device *hib_resume_bdev;
+static struct block_device *resume_bdev;
+
+/**
+ *	submit - submit BIO request.
+ *	@rw:	READ or WRITE.
+ *	@off	physical offset of page.
+ *	@page:	page we're reading or writing.
+ *	@bio_chain: list of pending biod (for async reading)
+ *
+ *	Straight from the textbook - allocate and initialize the bio.
+ *	If we're reading, make sure the page is marked as dirty.
+ *	Then submit it and, if @bio_chain == NULL, wait.
+ */
+static int submit(int rw, pgoff_t page_off, struct page *page,
+			struct bio **bio_chain)
+{
+	const int bio_rw = rw | (1 << BIO_RW_SYNCIO) | (1 << BIO_RW_UNPLUG);
+	struct bio *bio;
+
+	bio = bio_alloc(__GFP_WAIT | __GFP_HIGH, 1);
+	bio->bi_sector = page_off * (PAGE_SIZE >> 9);
+	bio->bi_bdev = resume_bdev;
+	bio->bi_end_io = end_swap_bio_read;
+
+	if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
+		printk(KERN_ERR "PM: Adding page to bio failed at %ld\n",
+			page_off);
+		bio_put(bio);
+		return -EFAULT;
+	}
+
+	lock_page(page);
+	bio_get(bio);
+
+	if (bio_chain == NULL) {
+		submit_bio(bio_rw, bio);
+		wait_on_page_locked(page);
+		if (rw == READ)
+			bio_set_pages_dirty(bio);
+		bio_put(bio);
+	} else {
+		if (rw == READ)
+			get_page(page);	/* These pages are freed later */
+		bio->bi_private = *bio_chain;
+		*bio_chain = bio;
+		submit_bio(bio_rw, bio);
+	}
+	return 0;
+}
+
+static int bio_read_page(pgoff_t page_off, void *addr, struct bio **bio_chain)
+{
+	return submit(READ, page_off, virt_to_page(addr), bio_chain);
+}
+
+static int bio_write_page(pgoff_t page_off, void *addr, struct bio **bio_chain)
+{
+	return submit(WRITE, page_off, virt_to_page(addr), bio_chain);
+}
+
+static int wait_on_bio_chain(struct bio **bio_chain)
+{
+	struct bio *bio;
+	struct bio *next_bio;
+	int ret = 0;
+
+	if (bio_chain == NULL)
+		return 0;
+
+	bio = *bio_chain;
+	if (bio == NULL)
+		return 0;
+	while (bio) {
+		struct page *page;
+
+		next_bio = bio->bi_private;
+		page = bio->bi_io_vec[0].bv_page;
+		wait_on_page_locked(page);
+		if (!PageUptodate(page) || PageError(page))
+			ret = -EIO;
+		put_page(page);
+		bio_put(bio);
+		bio = next_bio;
+	}
+	*bio_chain = NULL;
+	return ret;
+}
 
 /*
  * Saving part
  */
 
-static int mark_swapfiles(struct swap_map_handle *handle, unsigned int flags)
+static int mark_swapfiles(sector_t start, unsigned int flags)
 {
 	int error;
 
-	hib_bio_read_page(swsusp_resume_block, swsusp_header, NULL);
+	bio_read_page(swsusp_resume_block, swsusp_header, NULL);
 	if (!memcmp("SWAP-SPACE",swsusp_header->sig, 10) ||
 	    !memcmp("SWAPSPACE2",swsusp_header->sig, 10)) {
 		memcpy(swsusp_header->orig_sig,swsusp_header->sig, 10);
 		memcpy(swsusp_header->sig,SWSUSP_SIG, 10);
-		swsusp_header->image = handle->first_sector;
+		swsusp_header->image = start;
 		swsusp_header->flags = flags;
-		error = hib_bio_write_page(swsusp_resume_block,
+		error = bio_write_page(swsusp_resume_block,
 					swsusp_header, NULL);
 	} else {
 		printk(KERN_ERR "PM: Swap header not found!\n");
@@ -207,26 +259,25 @@ static int mark_swapfiles(struct swap_map_handle *handle, unsigned int flags)
 /**
  *	swsusp_swap_check - check if the resume device is a swap device
  *	and get its index (if so)
- *
- *	This is called before saving image
  */
-static int swsusp_swap_check(void)
+
+static int swsusp_swap_check(void) /* This is called before saving image */
 {
 	int res;
 
 	res = swap_type_of(swsusp_resume_device, swsusp_resume_block,
-			&hib_resume_bdev);
+			&resume_bdev);
 	if (res < 0)
 		return res;
 
 	root_swap = res;
-	res = blkdev_get(hib_resume_bdev, FMODE_WRITE);
+	res = blkdev_get(resume_bdev, FMODE_WRITE);
 	if (res)
 		return res;
 
-	res = set_blocksize(hib_resume_bdev, PAGE_SIZE);
+	res = set_blocksize(resume_bdev, PAGE_SIZE);
 	if (res < 0)
-		blkdev_put(hib_resume_bdev, FMODE_WRITE);
+		blkdev_put(resume_bdev, FMODE_WRITE);
 
 	return res;
 }
@@ -257,8 +308,41 @@ static int write_page(void *buf, sector_t offset, struct bio **bio_chain)
 	} else {
 		src = buf;
 	}
-	return hib_bio_write_page(offset, src, bio_chain);
+	return bio_write_page(offset, src, bio_chain);
 }
+
+/*
+ *	The swap map is a data structure used for keeping track of each page
+ *	written to a swap partition.  It consists of many swap_map_page
+ *	structures that contain each an array of MAP_PAGE_SIZE swap entries.
+ *	These structures are stored on the swap and linked together with the
+ *	help of the .next_swap member.
+ *
+ *	The swap map is created during suspend.  The swap map pages are
+ *	allocated and populated one at a time, so we only need one memory
+ *	page to set up the entire structure.
+ *
+ *	During resume we also only need to use one swap_map_page structure
+ *	at a time.
+ */
+
+#define MAP_PAGE_ENTRIES	(PAGE_SIZE / sizeof(sector_t) - 1)
+
+struct swap_map_page {
+	sector_t entries[MAP_PAGE_ENTRIES];
+	sector_t next_swap;
+};
+
+/**
+ *	The swap_map_handle structure is used for handling swap in
+ *	a file-alike way
+ */
+
+struct swap_map_handle {
+	struct swap_map_page *cur;
+	sector_t cur_swap;
+	unsigned int k;
+};
 
 static void release_swap_writer(struct swap_map_handle *handle)
 {
@@ -269,33 +353,16 @@ static void release_swap_writer(struct swap_map_handle *handle)
 
 static int get_swap_writer(struct swap_map_handle *handle)
 {
-	int ret;
-
-	ret = swsusp_swap_check();
-	if (ret) {
-		if (ret != -ENOSPC)
-			printk(KERN_ERR "PM: Cannot find swap device, try "
-					"swapon -a.\n");
-		return ret;
-	}
 	handle->cur = (struct swap_map_page *)get_zeroed_page(GFP_KERNEL);
-	if (!handle->cur) {
-		ret = -ENOMEM;
-		goto err_close;
-	}
+	if (!handle->cur)
+		return -ENOMEM;
 	handle->cur_swap = alloc_swapdev_block(root_swap);
 	if (!handle->cur_swap) {
-		ret = -ENOSPC;
-		goto err_rel;
+		release_swap_writer(handle);
+		return -ENOSPC;
 	}
 	handle->k = 0;
-	handle->first_sector = handle->cur_swap;
 	return 0;
-err_rel:
-	release_swap_writer(handle);
-err_close:
-	swsusp_close(FMODE_WRITE);
-	return ret;
 }
 
 static int swap_write_page(struct swap_map_handle *handle, void *buf,
@@ -312,7 +379,7 @@ static int swap_write_page(struct swap_map_handle *handle, void *buf,
 		return error;
 	handle->cur->entries[handle->k++] = offset;
 	if (handle->k >= MAP_PAGE_ENTRIES) {
-		error = hib_wait_on_bio_chain(bio_chain);
+		error = wait_on_bio_chain(bio_chain);
 		if (error)
 			goto out;
 		offset = alloc_swapdev_block(root_swap);
@@ -336,24 +403,6 @@ static int flush_swap_writer(struct swap_map_handle *handle)
 		return write_page(handle->cur, handle->cur_swap, NULL);
 	else
 		return -EINVAL;
-}
-
-static int swap_writer_finish(struct swap_map_handle *handle,
-		unsigned int flags, int error)
-{
-	if (!error) {
-		flush_swap_writer(handle);
-		printk(KERN_INFO "PM: S");
-		error = mark_swapfiles(handle, flags);
-		printk("|\n");
-	}
-
-	if (error)
-		free_all_swap_pages(root_swap);
-	release_swap_writer(handle);
-	swsusp_close(FMODE_WRITE);
-
-	return error;
 }
 
 /**
@@ -381,7 +430,7 @@ static int save_image(struct swap_map_handle *handle,
 	bio = NULL;
 	do_gettimeofday(&start);
 	while (1) {
-		ret = snapshot_read_next(snapshot);
+		ret = snapshot_read_next(snapshot, PAGE_SIZE);
 		if (ret <= 0)
 			break;
 		ret = swap_write_page(handle, data_of(*snapshot), &bio);
@@ -391,7 +440,7 @@ static int save_image(struct swap_map_handle *handle,
 			printk(KERN_CONT "\b\b\b\b%3d%%", nr_pages / m);
 		nr_pages++;
 	}
-	err2 = hib_wait_on_bio_chain(&bio);
+	err2 = wait_on_bio_chain(&bio);
 	do_gettimeofday(&stop);
 	if (!ret)
 		ret = err2;
@@ -433,34 +482,50 @@ int swsusp_write(unsigned int flags)
 	struct swap_map_handle handle;
 	struct snapshot_handle snapshot;
 	struct swsusp_info *header;
-	unsigned long pages;
 	int error;
 
-	pages = snapshot_get_image_size();
-	error = get_swap_writer(&handle);
+	error = swsusp_swap_check();
 	if (error) {
-		printk(KERN_ERR "PM: Cannot get swap writer\n");
+		printk(KERN_ERR "PM: Cannot find swap device, try "
+				"swapon -a.\n");
 		return error;
 	}
-	if (!enough_swap(pages)) {
-		printk(KERN_ERR "PM: Not enough free swap\n");
-		error = -ENOSPC;
-		goto out_finish;
-	}
 	memset(&snapshot, 0, sizeof(struct snapshot_handle));
-	error = snapshot_read_next(&snapshot);
+	error = snapshot_read_next(&snapshot, PAGE_SIZE);
 	if (error < PAGE_SIZE) {
 		if (error >= 0)
 			error = -EFAULT;
 
-		goto out_finish;
+		goto out;
 	}
 	header = (struct swsusp_info *)data_of(snapshot);
-	error = swap_write_page(&handle, header, NULL);
-	if (!error)
-		error = save_image(&handle, &snapshot, pages - 1);
-out_finish:
-	error = swap_writer_finish(&handle, flags, error);
+	if (!enough_swap(header->pages)) {
+		printk(KERN_ERR "PM: Not enough free swap\n");
+		error = -ENOSPC;
+		goto out;
+	}
+	error = get_swap_writer(&handle);
+	if (!error) {
+		sector_t start = handle.cur_swap;
+
+		error = swap_write_page(&handle, header, NULL);
+		if (!error)
+			error = save_image(&handle, &snapshot,
+					header->pages - 1);
+
+		if (!error) {
+			flush_swap_writer(&handle);
+			printk(KERN_INFO "PM: S");
+			error = mark_swapfiles(start, flags);
+			printk("|\n");
+		}
+	}
+	if (error)
+		free_all_swap_pages(root_swap);
+
+	release_swap_writer(&handle);
+ out:
+	swsusp_close(FMODE_WRITE);
 	return error;
 }
 
@@ -476,21 +541,18 @@ static void release_swap_reader(struct swap_map_handle *handle)
 	handle->cur = NULL;
 }
 
-static int get_swap_reader(struct swap_map_handle *handle,
-		unsigned int *flags_p)
+static int get_swap_reader(struct swap_map_handle *handle, sector_t start)
 {
 	int error;
 
-	*flags_p = swsusp_header->flags;
-
-	if (!swsusp_header->image) /* how can this happen? */
+	if (!start)
 		return -EINVAL;
 
 	handle->cur = (struct swap_map_page *)get_zeroed_page(__GFP_WAIT | __GFP_HIGH);
 	if (!handle->cur)
 		return -ENOMEM;
 
-	error = hib_bio_read_page(swsusp_header->image, handle->cur, NULL);
+	error = bio_read_page(start, handle->cur, NULL);
 	if (error) {
 		release_swap_reader(handle);
 		return error;
@@ -510,26 +572,19 @@ static int swap_read_page(struct swap_map_handle *handle, void *buf,
 	offset = handle->cur->entries[handle->k];
 	if (!offset)
 		return -EFAULT;
-	error = hib_bio_read_page(offset, buf, bio_chain);
+	error = bio_read_page(offset, buf, bio_chain);
 	if (error)
 		return error;
 	if (++handle->k >= MAP_PAGE_ENTRIES) {
-		error = hib_wait_on_bio_chain(bio_chain);
+		error = wait_on_bio_chain(bio_chain);
 		handle->k = 0;
 		offset = handle->cur->next_swap;
 		if (!offset)
 			release_swap_reader(handle);
 		else if (!error)
-			error = hib_bio_read_page(offset, handle->cur, NULL);
+			error = bio_read_page(offset, handle->cur, NULL);
 	}
 	return error;
-}
-
-static int swap_reader_finish(struct swap_map_handle *handle)
-{
-	release_swap_reader(handle);
-
-	return 0;
 }
 
 /**
@@ -559,21 +614,21 @@ static int load_image(struct swap_map_handle *handle,
 	bio = NULL;
 	do_gettimeofday(&start);
 	for ( ; ; ) {
-		error = snapshot_write_next(snapshot);
+		error = snapshot_write_next(snapshot, PAGE_SIZE);
 		if (error <= 0)
 			break;
 		error = swap_read_page(handle, data_of(*snapshot), &bio);
 		if (error)
 			break;
 		if (snapshot->sync_read)
-			error = hib_wait_on_bio_chain(&bio);
+			error = wait_on_bio_chain(&bio);
 		if (error)
 			break;
 		if (!(nr_pages % m))
 			printk("\b\b\b\b%3d%%", nr_pages / m);
 		nr_pages++;
 	}
-	err2 = hib_wait_on_bio_chain(&bio);
+	err2 = wait_on_bio_chain(&bio);
 	do_gettimeofday(&stop);
 	if (!error)
 		error = err2;
@@ -601,20 +656,24 @@ int swsusp_read(unsigned int *flags_p)
 	struct snapshot_handle snapshot;
 	struct swsusp_info *header;
 
+	*flags_p = swsusp_header->flags;
+	if (IS_ERR(resume_bdev)) {
+		pr_debug("PM: Image device not initialised\n");
+		return PTR_ERR(resume_bdev);
+	}
+
 	memset(&snapshot, 0, sizeof(struct snapshot_handle));
-	error = snapshot_write_next(&snapshot);
+	error = snapshot_write_next(&snapshot, PAGE_SIZE);
 	if (error < PAGE_SIZE)
 		return error < 0 ? error : -EFAULT;
 	header = (struct swsusp_info *)data_of(snapshot);
-	error = get_swap_reader(&handle, flags_p);
-	if (error)
-		goto end;
+	error = get_swap_reader(&handle, swsusp_header->image);
 	if (!error)
 		error = swap_read_page(&handle, header, NULL);
 	if (!error)
 		error = load_image(&handle, &snapshot, header->pages - 1);
-	swap_reader_finish(&handle);
-end:
+	release_swap_reader(&handle);
+
 	if (!error)
 		pr_debug("PM: Image successfully loaded\n");
 	else
@@ -630,11 +689,11 @@ int swsusp_check(void)
 {
 	int error;
 
-	hib_resume_bdev = open_by_devnum(swsusp_resume_device, FMODE_READ);
-	if (!IS_ERR(hib_resume_bdev)) {
-		set_blocksize(hib_resume_bdev, PAGE_SIZE);
+	resume_bdev = open_by_devnum(swsusp_resume_device, FMODE_READ);
+	if (!IS_ERR(resume_bdev)) {
+		set_blocksize(resume_bdev, PAGE_SIZE);
 		memset(swsusp_header, 0, PAGE_SIZE);
-		error = hib_bio_read_page(swsusp_resume_block,
+		error = bio_read_page(swsusp_resume_block,
 					swsusp_header, NULL);
 		if (error)
 			goto put;
@@ -642,7 +701,7 @@ int swsusp_check(void)
 		if (!memcmp(SWSUSP_SIG, swsusp_header->sig, 10)) {
 			memcpy(swsusp_header->sig, swsusp_header->orig_sig, 10);
 			/* Reset swap signature now */
-			error = hib_bio_write_page(swsusp_resume_block,
+			error = bio_write_page(swsusp_resume_block,
 						swsusp_header, NULL);
 		} else {
 			error = -EINVAL;
@@ -650,11 +709,11 @@ int swsusp_check(void)
 
 put:
 		if (error)
-			blkdev_put(hib_resume_bdev, FMODE_READ);
+			blkdev_put(resume_bdev, FMODE_READ);
 		else
 			pr_debug("PM: Signature found, resuming\n");
 	} else {
-		error = PTR_ERR(hib_resume_bdev);
+		error = PTR_ERR(resume_bdev);
 	}
 
 	if (error)
@@ -669,12 +728,12 @@ put:
 
 void swsusp_close(fmode_t mode)
 {
-	if (IS_ERR(hib_resume_bdev)) {
+	if (IS_ERR(resume_bdev)) {
 		pr_debug("PM: Image device not initialised\n");
 		return;
 	}
 
-	blkdev_put(hib_resume_bdev, mode);
+	blkdev_put(resume_bdev, mode);
 }
 
 static int swsusp_header_init(void)

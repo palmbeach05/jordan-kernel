@@ -579,6 +579,8 @@ static ssize_t rfkill_name_show(struct device *dev,
 
 static const char *rfkill_get_type_str(enum rfkill_type type)
 {
+	BUILD_BUG_ON(NUM_RFKILL_TYPES != RFKILL_TYPE_FM + 1);
+
 	switch (type) {
 	case RFKILL_TYPE_WLAN:
 		return "wlan";
@@ -594,13 +596,9 @@ static const char *rfkill_get_type_str(enum rfkill_type type)
 		return "gps";
 	case RFKILL_TYPE_FM:
 		return "fm";
-	case RFKILL_TYPE_PWR_CTL:
-		return "pwr_ctl";
 	default:
 		BUG();
 	}
-
-	BUILD_BUG_ON(NUM_RFKILL_TYPES != RFKILL_TYPE_PWR_CTL + 1);
 }
 
 static ssize_t rfkill_type_show(struct device *dev,
@@ -745,7 +743,6 @@ void rfkill_pause_polling(struct rfkill *rfkill)
 }
 EXPORT_SYMBOL(rfkill_pause_polling);
 
-#ifdef CONFIG_RFKILL_PM
 void rfkill_resume_polling(struct rfkill *rfkill)
 {
 	BUG_ON(!rfkill);
@@ -780,17 +777,14 @@ static int rfkill_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static struct class rfkill_class = {
 	.name		= "rfkill",
 	.dev_release	= rfkill_release,
 	.dev_attrs	= rfkill_dev_attrs,
 	.dev_uevent	= rfkill_dev_uevent,
-#ifdef CONFIG_RFKILL_PM
 	.suspend	= rfkill_suspend,
 	.resume		= rfkill_resume,
-#endif
 };
 
 bool rfkill_blocked(struct rfkill *rfkill)

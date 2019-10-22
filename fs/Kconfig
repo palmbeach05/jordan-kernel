@@ -174,10 +174,6 @@ source "fs/hfsplus/Kconfig"
 source "fs/befs/Kconfig"
 source "fs/bfs/Kconfig"
 source "fs/efs/Kconfig"
-
-# Patched by YAFFS
-source "fs/yaffs2/Kconfig"
-
 source "fs/jffs2/Kconfig"
 # UBIFS File system configuration
 source "fs/ubifs/Kconfig"
@@ -246,12 +242,6 @@ source "fs/9p/Kconfig"
 
 endif # NETWORK_FILESYSTEMS
 
-config CMDLINE_PARSER
-	bool "Block device command line partition parser"
-	default n
-	---help---
-	Parsing command line, get the partitions information.
-
 if BLOCK
 menu "Partition Types"
 
@@ -262,11 +252,5 @@ endif
 
 source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
-
-config DYNAMIC_FSYNC
-	bool "dynamic file sync control"
-	default n
-	help
-	  An experimental file sync control using Android's early suspend / late resume drivers
 
 endmenu

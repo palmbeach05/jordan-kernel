@@ -39,8 +39,6 @@
 #include <linux/nsproxy.h>
 #include <linux/mount.h>
 #include <linux/ipc_namespace.h>
-#include <linux/ima.h>
-#include <trace/ipc.h>
 
 #include <asm/uaccess.h>
 
@@ -57,8 +55,6 @@ struct shm_file_data {
 
 static const struct file_operations shm_file_operations;
 static const struct vm_operations_struct shm_vm_ops;
-
-DEFINE_TRACE(ipc_shm_create);
 
 #define shm_ids(ns)	((ns)->ids[IPC_SHM_IDS])
 
@@ -454,7 +450,6 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 	struct ipc_namespace *ns;
 	struct ipc_ops shm_ops;
 	struct ipc_params shm_params;
-	long err;
 
 	ns = current->nsproxy->ipc_ns;
 
@@ -466,9 +461,7 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 	shm_params.flg = shmflg;
 	shm_params.u.size = size;
 
-	err = ipcget(ns, &shm_ids(ns), &shm_ops, &shm_params);
-	trace_ipc_shm_create(err, shmflg);
-	return err;
+	return ipcget(ns, &shm_ids(ns), &shm_ops, &shm_params);
 }
 
 static inline unsigned long copy_shmid_to_user(void __user *buf, struct shmid64_ds *in, int version)
@@ -885,8 +878,8 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg, ulong *raddr)
 	if (err)
 		goto out_unlock;
 
-	path.dentry = dget(shp->shm_file->f_path.dentry);
-	path.mnt    = shp->shm_file->f_path.mnt;
+	path = shp->shm_file->f_path;
+	path_get(&path);
 	shp->shm_nattch++;
 	size = i_size_read(path.dentry->d_inode);
 	shm_unlock(shp);
@@ -896,13 +889,12 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg, ulong *raddr)
 	if (!sfd)
 		goto out_put_dentry;
 
-	file = alloc_file(path.mnt, path.dentry, f_mode,
-			is_file_hugepages(shp->shm_file) ?
+	file = alloc_file(&path, f_mode,
+			  is_file_hugepages(shp->shm_file) ?
 				&shm_file_operations_huge :
 				&shm_file_operations);
 	if (!file)
 		goto out_free;
-	ima_counts_get(file);
 
 	file->private_data = sfd;
 	file->f_mapping = shp->shm_file->f_mapping;
@@ -957,7 +949,7 @@ out_unlock:
 out_free:
 	kfree(sfd);
 out_put_dentry:
-	dput(path.dentry);
+	path_put(&path);
 	goto out_nattch;
 }
 

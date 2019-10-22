@@ -10,7 +10,7 @@
  */
 #include <mach/hardware.h>
 
-	.macro	addruart, rx, tmp
+	.macro	addruart,rx
 	/* If we move the adress using MMU, use this. */
 	mrc	p15, 0, \rx, c1, c0
 	tst	\rx, #1			@ MMU enabled?

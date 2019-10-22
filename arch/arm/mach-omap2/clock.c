@@ -46,8 +46,6 @@
 /* Possible error results from _dpll_test_mult */
 #define DPLL_MULT_UNDERFLOW		-1
 
-#define GPU_PARENT_RATE			800000000
-
 /*
  * Scale factor to mitigate roundoff errors in DPLL rate rounding.
  * The higher the scale factor, the greater the risk of arithmetic overflow,
@@ -72,8 +70,40 @@
 u8 cpu_mask;
 
 /*-------------------------------------------------------------------------
- * OMAP2/3 specific clock functions
+ * OMAP2/3/4 specific clock functions
  *-------------------------------------------------------------------------*/
+
+void omap2_init_dpll_parent(struct clk *clk)
+{
+	u32 v;
+	struct dpll_data *dd;
+
+	dd = clk->dpll_data;
+	if (!dd)
+		return;
+
+	/* Return bypass rate if DPLL is bypassed */
+	v = __raw_readl(dd->control_reg);
+	v &= dd->enable_mask;
+	v >>= __ffs(dd->enable_mask);
+
+	/* Reparent in case the dpll is in bypass */
+	if (cpu_is_omap24xx()) {
+		if (v == OMAP2XXX_EN_DPLL_LPBYPASS ||
+		    v == OMAP2XXX_EN_DPLL_FRBYPASS)
+			clk_reparent(clk, dd->clk_bypass);
+	} else if (cpu_is_omap34xx()) {
+		if (v == OMAP3XXX_EN_DPLL_LPBYPASS ||
+		    v == OMAP3XXX_EN_DPLL_FRBYPASS)
+			clk_reparent(clk, dd->clk_bypass);
+	} else if (cpu_is_omap44xx()) {
+		if (v == OMAP4XXX_EN_DPLL_LPBYPASS ||
+		    v == OMAP4XXX_EN_DPLL_FRBYPASS ||
+		    v == OMAP4XXX_EN_DPLL_MNBYPASS)
+			clk_reparent(clk, dd->clk_bypass);
+	}
+	return;
+}
 
 /**
  * _omap2xxx_clk_commit - commit clock parent/rate changes in hardware
@@ -90,8 +120,6 @@ static void _omap2xxx_clk_commit(struct clk *clk)
 
 	if (!(clk->flags & DELAYED_APP))
 		return;
-
-	// printk("%s: Set %s frequence to %lu\n", __FUNCTION__, clk->name, clk->rate);
 
 	prm_write_mod_reg(OMAP24XX_VALID_CONFIG, OMAP24XX_GR_MOD,
 		OMAP2_PRCM_CLKCFG_CTRL_OFFSET);
@@ -153,6 +181,7 @@ static int _dpll_test_fint(struct clk *clk, u8 n)
  * clockdomain pointer, and save it into the struct clk.  Intended to be
  * called during clk_register().  No return value.
  */
+#ifndef CONFIG_ARCH_OMAP4 /* FIXME: Remove this once clkdm f/w is in place */
 void omap2_init_clk_clkdm(struct clk *clk)
 {
 	struct clockdomain *clkdm;
@@ -170,6 +199,7 @@ void omap2_init_clk_clkdm(struct clk *clk)
 			 "clkdm %s\n", clk->name, clk->clkdm_name);
 	}
 }
+#endif
 
 /**
  * omap2_init_clksel_parent - set a clksel clk's parent field from the hardware
@@ -250,6 +280,11 @@ u32 omap2_get_dpll_rate(struct clk *clk)
 	} else if (cpu_is_omap34xx()) {
 		if (v == OMAP3XXX_EN_DPLL_LPBYPASS ||
 		    v == OMAP3XXX_EN_DPLL_FRBYPASS)
+			return dd->clk_bypass->rate;
+	} else if (cpu_is_omap44xx()) {
+		if (v == OMAP4XXX_EN_DPLL_LPBYPASS ||
+		    v == OMAP4XXX_EN_DPLL_FRBYPASS ||
+		    v == OMAP4XXX_EN_DPLL_MNBYPASS)
 			return dd->clk_bypass->rate;
 	}
 
@@ -386,45 +421,6 @@ int omap2_dflt_clk_enable(struct clk *clk)
 	return 0;
 }
 
-/** omap3_pwrdn_bug_clk_enable - enable clocks suffering from PWRDN bug
- * @clk: DPLL output struct clk
- *
- * 3630 only: dpll3_m3_ck, dpll4_m2_ck, dpll4_m3_ck, dpll4_m4_ck, dpll4_m5_ck
- * & dpll4_m6_ck dividers get lost after their respective PWRDN bits are set.
- * Any write to the corresponding CM_CLKSEL register will refresh the
- * dividers.  Only x2 clocks are affected, so it is safe to trust the parent
- * clock information to refresh the CM_CLKSEL registers.
- */
-int omap3_pwrdn_bug_clk_enable(struct clk *clk)
-{
-	u32 v;
-
-	if (unlikely(clk->enable_reg == NULL)) {
-		pr_err("clock.c: Enable for %s without enable code\n",
-			clk->name);
-		return 0; /* REVISIT: -EINVAL */
-	}
-
-	v = __raw_readl(clk->enable_reg);
-	if (clk->flags & INVERT_ENABLE)
-		v &= ~(1 << clk->enable_bit);
-	else
-		v |= (1 << clk->enable_bit);
-	__raw_writel(v, clk->enable_reg);
-	v = __raw_readl(clk->enable_reg); /* OCP barrier */
-
-	if (clk->ops->find_idlest)
-		omap2_module_wait_ready(clk);
-
-	v = __raw_readl(clk->parent->clksel_reg);
-	v += (1 << clk->parent->clksel_shift);
-	__raw_writel(v, clk->parent->clksel_reg);
-	v -= (1 << clk->parent->clksel_shift);
-	__raw_writel(v, clk->parent->clksel_reg);
-
-	return 0;
-}
-
 void omap2_dflt_clk_disable(struct clk *clk)
 {
 	u32 v;
@@ -480,8 +476,10 @@ void omap2_clk_disable(struct clk *clk)
 		_omap2_clk_disable(clk);
 		if (clk->parent)
 			omap2_clk_disable(clk->parent);
+#ifndef CONFIG_ARCH_OMAP4 /* FIXME: Remove this once clkdm f/w is in place */
 		if (clk->clkdm)
 			omap2_clkdm_clk_disable(clk->clkdm, clk);
+#endif
 
 	}
 }
@@ -491,8 +489,10 @@ int omap2_clk_enable(struct clk *clk)
 	int ret = 0;
 
 	if (clk->usecount++ == 0) {
+#ifndef CONFIG_ARCH_OMAP4 /* FIXME: Remove this once clkdm f/w is in place */
 		if (clk->clkdm)
 			omap2_clkdm_clk_enable(clk->clkdm, clk);
+#endif
 
 		if (clk->parent) {
 			ret = omap2_clk_enable(clk->parent);
@@ -511,8 +511,10 @@ int omap2_clk_enable(struct clk *clk)
 	return ret;
 
 err:
+#ifndef CONFIG_ARCH_OMAP4 /* FIXME: Remove this once clkdm f/w is in place */
 	if (clk->clkdm)
 		omap2_clkdm_clk_disable(clk->clkdm, clk);
+#endif
 	clk->usecount--;
 	return ret;
 }
@@ -587,13 +589,13 @@ static const struct clksel *omap2_get_clksel_by_parent(struct clk *clk,
 u32 omap2_clksel_round_rate_div(struct clk *clk, unsigned long target_rate,
 				u32 *new_div)
 {
-	unsigned long test_rate, parent_rate;
+	unsigned long test_rate;
 	const struct clksel *clks;
 	const struct clksel_rate *clkr;
 	u32 last_div = 0;
 
 	pr_debug("clock: clksel_round_rate_div: %s target_rate %ld\n",
-				clk->name, target_rate);
+		 clk->name, target_rate);
 
 	*new_div = 1;
 
@@ -612,17 +614,7 @@ u32 omap2_clksel_round_rate_div(struct clk *clk, unsigned long target_rate,
 
 		last_div = clkr->div;
 
-		// Engle, Add for SGX530 frequence control, start
-		// test_rate = clk->parent->rate / clkr->div;
-		parent_rate = clk->parent->rate;
-		if (strcmp(clk->name, "sgx_fck") == 0 && GPU_PARENT_RATE != clk->parent->rate) {
-			parent_rate = GPU_PARENT_RATE;
-			printk("%s: force change to GPU_PARENT_RATE\n", __FUNCTION__);
-		}
-		test_rate = parent_rate / clkr->div;
-		//printk("After recalc %lu, parent is %s, test_rate %lu, div %d \n",
-		//		clk->parent->rate, clk->parent->name, test_rate, clkr->div);
-		// Engle, Add for SGX530 frequence control, end
+		test_rate = clk->parent->rate / clkr->div;
 
 		if (test_rate <= target_rate)
 			break; /* found it */
@@ -635,16 +627,12 @@ u32 omap2_clksel_round_rate_div(struct clk *clk, unsigned long target_rate,
 		return ~0;
 	}
 
-	//printk("%s: last_div %d, clkr->div %d\n", __FUNCTION__, last_div, clkr->div);
 	*new_div = clkr->div;
 
 	pr_debug("clock: new_div = %d, new_rate = %ld\n", *new_div,
 		 (clk->parent->rate / clkr->div));
 
-	// Engle, Add for SGX530 frequence control, start
-	// return (clk->parent->rate / clkr->div);
-	return (parent_rate / clkr->div);
-	// Engle, Add for SGX530 frequence control, end
+	return (clk->parent->rate / clkr->div);
 }
 
 /**
@@ -773,24 +761,17 @@ u32 omap2_clksel_get_divisor(struct clk *clk)
 int omap2_clksel_set_rate(struct clk *clk, unsigned long rate)
 {
 	u32 v, field_val, validrate, new_div = 0;
-	unsigned long parent_rate;
 
-	if (!clk->clksel_mask) {
-		printk("%s: clk->clksel_mask is %d\n ", __FUNCTION__, clk->clksel_mask);
+	if (!clk->clksel_mask)
 		return -EINVAL;
-	}
 
 	validrate = omap2_clksel_round_rate_div(clk, rate, &new_div);
-	if (validrate != rate) {
-		printk("%s: validrate (%lu) != rate (%lu)\n", __FUNCTION__, validrate, rate);
+	if (validrate != rate)
 		return -EINVAL;
-	}
 
 	field_val = omap2_divisor_to_clksel(clk, new_div);
-	if (field_val == ~0) {
-		printk("%s: field_val == ~0\n", __FUNCTION__);
+	if (field_val == ~0)
 		return -EINVAL;
-	}
 
 	v = __raw_readl(clk->clksel_reg);
 	v &= ~clk->clksel_mask;
@@ -798,15 +779,7 @@ int omap2_clksel_set_rate(struct clk *clk, unsigned long rate)
 	__raw_writel(v, clk->clksel_reg);
 	v = __raw_readl(clk->clksel_reg); /* OCP barrier */
 
-	// Engle, Add for SGX530 frequence control, start
-	// clk->rate = clk->parent->rate / new_div;
-	parent_rate = clk->parent->rate;
-	if (strcmp(clk->name, "sgx_fck") == 0 && GPU_PARENT_RATE != parent_rate) {
-		parent_rate =  GPU_PARENT_RATE;
-	}
-	// printk("%s: parent_rate %lu, new_div %d\n", __FUNCTION__, parent_rate, new_div);
-	clk->rate = parent_rate / new_div;
-	// Engle, Add for SGX530 frequence control, end
+	clk->rate = clk->parent->rate / new_div;
 
 	_omap2xxx_clk_commit(clk);
 
@@ -1083,15 +1056,6 @@ long omap2_dpll_round_rate(struct clk *clk, unsigned long target_rate)
 
 	dd->last_rounded_m = min_e_m;
 	dd->last_rounded_n = min_e_n;
-
-	if (strcmp(clk->name, "dpll1_ck") == 0) {
-		if (dd->last_rounded_n == 1 && dd->last_rounded_m < 1024) {
-			dd->last_rounded_n = 2;
-			dd->last_rounded_m = dd->last_rounded_m * 2;
-			pr_debug("Clock divider fixed.");
-		}
-        }
-
 	dd->last_rounded_rate = _dpll_compute_new_rate(dd->clk_ref->rate,
 						       min_e_m,  min_e_n);
 
@@ -1117,16 +1081,7 @@ void omap2_clk_disable_unused(struct clk *clk)
 	regval32 = __raw_readl(clk->enable_reg);
 	if ((regval32 & (1 << clk->enable_bit)) == v)
 		return;
-#ifdef CONFIG_DEBUG_LL
-	if (strcmp(clk->name, "uart3_ick") == 0)
-	{
-		return;
-	}
-	if (strcmp(clk->name, "uart3_fck") == 0)
-	{
-		return;
-	}
-#endif
+
 	printk(KERN_DEBUG "Disabling unused clock \"%s\"\n", clk->name);
 	if (cpu_is_omap34xx()) {
 		omap2_clk_enable(clk);

@@ -49,7 +49,6 @@ int init_srcu_struct(struct srcu_struct *sp)
 	sp->per_cpu_ref = alloc_percpu(struct srcu_struct_array);
 	return (sp->per_cpu_ref ? 0 : -ENOMEM);
 }
-
 EXPORT_SYMBOL_GPL(init_srcu_struct);
 
 /*

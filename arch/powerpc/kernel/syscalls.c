@@ -36,14 +36,11 @@
 #include <linux/file.h>
 #include <linux/init.h>
 #include <linux/personality.h>
-#include <trace/ipc.h>
 
 #include <asm/uaccess.h>
 #include <asm/syscalls.h>
 #include <asm/time.h>
 #include <asm/unistd.h>
-
-DEFINE_TRACE(ipc_call);
 
 /*
  * sys_ipc() is the de-multiplexer for the SysV IPC calls..
@@ -57,8 +54,6 @@ int sys_ipc(uint call, int first, unsigned long second, long third,
 
 	version = call >> 16; /* hack for backward compatibility */
 	call &= 0xffff;
-
-	trace_ipc_call(call, first);
 
 	ret = -ENOSYS;
 	switch (call) {

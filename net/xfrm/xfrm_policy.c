@@ -2031,7 +2031,8 @@ int __xfrm_route_forward(struct sk_buff *skb, unsigned short family)
 	int res;
 
 	if (xfrm_decode_session(skb, &fl, family) < 0) {
-		XFRM_INC_STATS(net, LINUX_MIB_XFRMFWDHDRERROR);
+		/* XXX: we should have something like FWDHDRERROR here. */
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMINHDRERROR);
 		return 0;
 	}
 

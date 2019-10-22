@@ -30,7 +30,7 @@ static int llc_mac_header_len(unsigned short devtype)
 	case ARPHRD_ETHER:
 	case ARPHRD_LOOPBACK:
 		return sizeof(struct ethhdr);
-#if defined(CONFIG_TR) || defined(CONFIG_TR_MODULE)
+#ifdef CONFIG_TR
 	case ARPHRD_IEEE802_TR:
 		return sizeof(struct trh_hdr);
 #endif

@@ -453,8 +453,6 @@ static irqreturn_t dss_irq_handler_omap3(int irq, void *arg)
 {
 	u32 irqstatus;
 
-	dss_clk_enable(DSS_CLK_ICK | DSS_CLK_FCK1);
-
 	irqstatus = dss_read_reg(DSS_IRQSTATUS);
 
 	if (irqstatus & (1<<0))	/* DISPC_IRQ */
@@ -463,8 +461,6 @@ static irqreturn_t dss_irq_handler_omap3(int irq, void *arg)
 	if (irqstatus & (1<<1))	/* DSI_IRQ */
 		dsi_irq_handler();
 #endif
-
-	dss_clk_disable(DSS_CLK_ICK | DSS_CLK_FCK1);
 
 	return IRQ_HANDLED;
 }
@@ -550,21 +546,6 @@ int dss_init(bool skip_init)
 	REG_FLD_MOD(DSS_CONTROL, 1, 4, 4);	/* venc dac demen */
 	REG_FLD_MOD(DSS_CONTROL, 1, 3, 3);	/* venc clock 4x enable */
 	REG_FLD_MOD(DSS_CONTROL, 0, 2, 2);	/* venc clock mode = normal */
-#endif
-
-#ifdef CONFIG_OMAP2_DSS_DSI
-	/* disable the dsi interrupts so no spurious dsi irq's are deliverd
-	 * before the dsi block is fully initialzed -- this is especially an
-	 * issue if skip_init is true, as resetting the dss block would clear
-	 * these interupts anyway */
-	omap_writel(0, 0x4804FC1C);
-	omap_writel(0, 0x4804FC50);
-	omap_writel(0, 0x4805041C);
-#endif
-
-#ifdef CONFIG_MAPPHONE_2NDBOOT
-	/* Reset state */
-	//omap_writel(0x1FFFF, 0x48050418);
 #endif
 
 	r = request_irq(INT_24XX_DSS_IRQ,

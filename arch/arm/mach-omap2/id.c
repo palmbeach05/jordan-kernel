@@ -18,23 +18,16 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/socinfo.h>
-#include <linux/seq_file.h>
 
 #include <asm/cputype.h>
 
 #include <plat/common.h>
 #include <plat/control.h>
 #include <plat/cpu.h>
-#ifdef CONFIG_ARM_OF
-#include <mach/dt_path.h>
-#include <asm/prom.h>
-#endif
 
 static struct omap_chip_id omap_chip;
+static unsigned int omap_revision;
 
-static unsigned int omap_revision, omap_revision_id;
-static char *rev_name = "ES1.0                         ";
 u32 omap3_features;
 
 unsigned int omap_rev(void)
@@ -42,46 +35,6 @@ unsigned int omap_rev(void)
 	return omap_revision;
 }
 EXPORT_SYMBOL(omap_rev);
-
-/* Check OMAP3630 variants for SW tiering.
- * OMAP3630-0800:  Max ARM/DSP@800/660Mhz, OPP1G N-Target not fused.
- * OMAP3630-1000: Max ARM/DSP@1G/800Mhz, OPP1G N-Target fused,OPP1.3G not fused.
- * OMAP3630-1200: Max ARM/DSP@1.2G/65Mhz, OPP1.2G fused.
- * Should be called as early as possible, but after devtree is initialized.
- */
-void get_omap3630_revision_id(void){
-
-#ifdef CONFIG_ARM_OF
-	struct device_node *omaprev_node;
-	const void *omaprev_prop;
-
-	omaprev_node = of_find_node_by_path(DT_PATH_CHOSEN);
-
-	if (omaprev_node != NULL) {
-		omaprev_prop = of_get_property(omaprev_node, \
-			DT_PROP_CHOSEN_OMAP3630REV, NULL);
-		if (omaprev_prop) {
-			omap_revision_id = *(unsigned int *)omaprev_prop;
-			printk(KERN_INFO"%s: Devtree omap3630-variant 0x%08x\n",
-				 __func__, omap_revision_id);
-		} else {
-			omap_revision_id = OMAP_3630_1000;
-			printk(KERN_INFO"%s: Default omap3630-variant 0x%08x\n",
-				 __func__, omap_revision_id);
-			}
-
-		of_node_put(omaprev_node);
-	} else
-		printk(KERN_ERR"%s can not find Chosen@0 node\n", __func__);
-#endif
-
-}
-
-unsigned int omap_rev_id(void)
-{
-	return omap_revision_id;
-}
-EXPORT_SYMBOL(omap_rev_id);
 
 /**
  * omap_chip_is - test whether currently running OMAP matches a chip type
@@ -121,10 +74,6 @@ EXPORT_SYMBOL(omap_type);
 /*----------------------------------------------------------------------------*/
 
 #define OMAP_TAP_IDCODE		0x0204
-#define OMAP_TAP_PROD_ID_0      0x0208
-#define OMAP_TAP_PROD_ID_1      0x020c
-#define OMAP_TAP_PROD_ID_2      0x0210
-#define OMAP_TAP_PROD_ID_3      0x0214
 #define OMAP_TAP_DIE_ID_0	0x0218
 #define OMAP_TAP_DIE_ID_1	0x021C
 #define OMAP_TAP_DIE_ID_2	0x0220
@@ -150,35 +99,10 @@ static struct omap_id omap_ids[] __initdata = {
 
 static void __iomem *tap_base;
 static u16 tap_prod_id;
-#define SOCINFO_SZ             128
-static char socinfo[SOCINFO_SZ];
-
-/* 
- * omap_is_SEC: check Fab ID of OMAP3630 chip.
- * it is upper 8 bits of the DIE_ID at 0x4800A21C
- * FAB_ID = 0x0a: SEC
- * FAB_ID = 0x01: UMC
- */
-#define FAB_ID_SEC 0x0a
-#define FAB_ID_UMC 0x01
-int omap_is_SEC(void){
-	u8 fab_id;
-	int is_SEC = 0;
-	if (cpu_is_omap3630()) {
-		fab_id = read_tap_reg(OMAP_TAP_DIE_ID_1) >> 24;
-		if (fab_id == FAB_ID_SEC)
-			is_SEC = 1;
-		printk(KERN_CRIT"%s: fab_id = %d, it is %s OMAP3630 Silicon\n",
-			__func__, fab_id, (is_SEC) ? "SEC" : "UMC");
-	}
-	return is_SEC;
-}
-EXPORT_SYMBOL(omap_is_SEC);
-
 
 void __init omap24xx_check_revision(void)
 {
-	int i, j, sz;
+	int i, j;
 	u32 idcode, prod_id;
 	u16 hawkeye;
 	u8  dev_type, rev;
@@ -226,11 +150,10 @@ void __init omap24xx_check_revision(void)
 		j = i;
 	}
 
-	sz = snprintf(socinfo, SOCINFO_SZ, "OMAP%04x", omap_rev() >> 16);
+	pr_info("OMAP%04x", omap_rev() >> 16);
 	if ((omap_rev() >> 8) & 0x0f)
-		snprintf(socinfo + sz, SOCINFO_SZ - sz, "ES%x",
-						(omap_rev() >> 12) & 0xf);
-	pr_info("%s\n", socinfo);
+		pr_info("ES%x", (omap_rev() >> 12) & 0xf);
+	pr_info("\n");
 }
 
 #define OMAP3_CHECK_FEATURE(status,feat)				\
@@ -316,25 +239,36 @@ void __init omap3_check_revision(void)
 		omap_revision = OMAP3505_REV(rev);
 		break;
 	case 0xb891:
-		/* Handle 36xx devices */
-		switch (rev) {
-		case 0:
-			omap_revision = OMAP3630_REV_ES1_0;
-			break;
-		case 1:
-			omap_revision = OMAP3630_REV_ES1_1;
-			break;
-		case 2:
-			/* Fall through */
-		default:
-			/* Use the latest known revision as default */
-			omap_revision = OMAP3630_REV_ES1_2;
-		}
-		break;
+	/* FALLTHROUGH */
 	default:
 		/* Unknown default to latest silicon rev as default*/
 		omap_revision = OMAP3630_REV_ES1_0;
 	}
+}
+
+void __init omap4_check_revision(void)
+{
+	u32 idcode;
+	u16 hawkeye;
+	u8 rev;
+	char *rev_name = "ES1.0";
+
+	/*
+	 * The IC rev detection is done with hawkeye and rev.
+	 * Note that rev does not map directly to defined processor
+	 * revision numbers as ES1.0 uses value 0.
+	 */
+	idcode = read_tap_reg(OMAP_TAP_IDCODE);
+	hawkeye = (idcode >> 12) & 0xffff;
+	rev = (idcode >> 28) & 0xff;
+
+	if ((hawkeye == 0xb852) && (rev == 0x0)) {
+		omap_revision = OMAP4430_REV_ES1_0;
+		pr_info("OMAP%04x %s\n", omap_rev() >> 16, rev_name);
+		return;
+	}
+
+	pr_err("Unknown OMAP4 CPU id\n");
 }
 
 #define OMAP3_SHOW_FEATURE(feat)		\
@@ -343,7 +277,6 @@ void __init omap3_check_revision(void)
 
 void __init omap3_cpuinfo(void)
 {
-	int sz;
 	u8 rev = GET_OMAP_REVISION();
 	char cpu_name[16], cpu_rev[16];
 
@@ -384,12 +317,6 @@ void __init omap3_cpuinfo(void)
 	case OMAP_REVBITS_00:
 		strcpy(cpu_rev, "1.0");
 		break;
-	case OMAP_REVBITS_01:
-		strcpy(cpu_rev, "1.1");
-		break;
-	case OMAP_REVBITS_02:
-		strcpy(cpu_rev, "1.2");
-		break;
 	case OMAP_REVBITS_10:
 		strcpy(cpu_rev, "2.0");
 		break;
@@ -407,8 +334,7 @@ void __init omap3_cpuinfo(void)
 	}
 
 	/* Print verbose information */
-	sz = snprintf(socinfo, SOCINFO_SZ, "%s ES%s", cpu_name, cpu_rev);
-	pr_info("%s (", socinfo);
+	pr_info("%s ES%s (", cpu_name, cpu_rev);
 
 	OMAP3_SHOW_FEATURE(l2cache);
 	OMAP3_SHOW_FEATURE(iva);
@@ -417,57 +343,7 @@ void __init omap3_cpuinfo(void)
 	OMAP3_SHOW_FEATURE(isp);
 
 	printk(")\n");
-
-	/* Append OMAP3 IDCODE and Production ID to /proc/socinfo */
-	snprintf(socinfo + sz, SOCINFO_SZ - sz,
-			"\nIDCODE\t: %08x\nPr. ID\t: %08x %08x %08x %08x",
-			read_tap_reg(OMAP_TAP_IDCODE),
-			read_tap_reg(OMAP_TAP_PROD_ID_0),
-			read_tap_reg(OMAP_TAP_PROD_ID_1),
-			read_tap_reg(OMAP_TAP_PROD_ID_2),
-			read_tap_reg(OMAP_TAP_PROD_ID_3));
-
 }
-
-#ifdef CONFIG_OMAP3_EXPORT_DIE_ID
-static int __init omap3_die_id_setup(char *s)
-{
-	int sz;
-
-	sz = strlen(socinfo);
-	snprintf(socinfo + sz, SOCINFO_SZ - sz,
-			"\nDie ID\t: %08x %08x %08x %08x",
-			read_tap_reg(OMAP_TAP_DIE_ID_0),
-			read_tap_reg(OMAP_TAP_DIE_ID_1),
-			read_tap_reg(OMAP_TAP_DIE_ID_2),
-			read_tap_reg(OMAP_TAP_DIE_ID_3));
-
-	return 1;
-}
-__setup("omap3_die_id", omap3_die_id_setup);
-#endif
-
-static int omap_socinfo_show(struct seq_file *m, void *v)
-{
-       char *socinfop = v;
-
-       seq_printf(m, "SoC\t: %s\n", socinfop);
-
-       return 0;
-}
-
-static int phone_id_panic_report(struct notifier_block *this,
-					unsigned long event, void *ptr)
-{
-	pr_emerg("Phone id:%x%x", read_tap_reg(OMAP_TAP_DIE_ID_0), \
-					read_tap_reg(OMAP_TAP_DIE_ID_1));
-	return NOTIFY_DONE;
-}
-static struct notifier_block phone_id_panic_notifier = {
-	.notifier_call	= phone_id_panic_report,
-	.next		= NULL,
-	.priority	= INT_MAX,
-};
 
 /*
  * Try to detect the exact revision of the omap we're running on
@@ -485,14 +361,11 @@ void __init omap2_check_revision(void)
 		omap3_check_features();
 		omap3_cpuinfo();
 	} else if (cpu_is_omap44xx()) {
-		printk(KERN_INFO "FIXME: CPU revision = OMAP4430\n");
+		omap4_check_revision();
 		return;
 	} else {
 		pr_err("OMAP revision unknown, please fix!\n");
 	}
-
-	/* also register call back to report SoC data under /proc/socinfo */
-	register_socinfo_show(omap_socinfo_show, socinfo);
 
 	/*
 	 * OK, now we know the exact revision. Initialize omap_chip bits
@@ -519,19 +392,9 @@ void __init omap2_check_revision(void)
 			omap_chip.oc |= CHIP_IS_OMAP3430ES3_1;
 		else if (omap_rev() == OMAP3630_REV_ES1_0)
 			omap_chip.oc |= CHIP_IS_OMAP3630ES1;
-		else if (omap_rev() == OMAP3630_REV_ES1_1)
-			omap_chip.oc |= CHIP_IS_OMAP3630ES1 |
-					CHIP_IS_OMAP3630ES1_1;
-		else if (omap_rev() == OMAP3630_REV_ES1_2)
-			omap_chip.oc |= CHIP_IS_OMAP3630ES1 |
-					CHIP_IS_OMAP3630ES1_1 |
-					CHIP_IS_OMAP3630ES1_2;
 	} else {
 		pr_err("Uninitialized omap_chip, please fix!\n");
 	}
-
-	atomic_notifier_chain_register(&panic_notifier_list,
-					&phone_id_panic_notifier);
 }
 
 /*
@@ -551,58 +414,3 @@ void __init omap2_set_globals_tap(struct omap_globals *omap2_globals)
 	else
 		tap_prod_id = 0x0208;
 }
-
-/*
- * Get OMAP chip version details from bootargs
- */
-int  omap34xx_get_omap_version(char *str)
-{
-	unsigned int rev_id;
-	if (get_option(&str, &rev_id) == 1) {
-		switch (rev_id) {
-		case 3420:
-			omap_revision_id = OMAP_3420;
-			omap_revision = OMAP3430_REV_ES3_1;
-			omap_chip.oc |= CHIP_IS_OMAP3430ES3_1;
-			rev_name = "ES3.1";
-			break;
-		case 3430:
-			omap_revision_id = OMAP_3430;
-			omap_revision = OMAP3430_REV_ES3_1;
-			omap_chip.oc |= CHIP_IS_OMAP3430ES3_1;
-			rev_name = "ES3.1";
-			break;
-		case 3440:
-			omap_revision_id = OMAP_3440;
-			omap_revision = OMAP3430_REV_ES3_1_1;
-			omap_chip.oc |= CHIP_IS_OMAP3430ES3_1_1;
-			rev_name = "ES3.1.1";
-			break;
-		case 3630:
-			omap_revision_id = OMAP_3630;
-			omap_chip.oc |= CHIP_IS_OMAP3630ES1;
-			omap_revision = OMAP3630_REV_ES1_0;
-			break;
-		case 36300800:
-			omap_revision_id = OMAP_3630_0800;
-			omap_chip.oc |= CHIP_IS_OMAP3630ES1;
-			omap_revision = OMAP3630_REV_ES1_0;
-			break;
-		case 36301000:
-			omap_revision_id = OMAP_3630_1000;
-			omap_chip.oc |= CHIP_IS_OMAP3630ES1;
-			omap_revision = OMAP3630_REV_ES1_0;
-			break;
-		default:
-			pr_err("OMAP revision unknown, please fix!\n");
-			return 1;
-		}
-		pr_info("OMAP%04x %s\n", omap_rev() >> 16, rev_name);
-		pr_info("OMAP Version is OMAP%04d\n", rev_id);
-	}
-
-	return 1;
-}
-
-__setup("omap_version=", omap34xx_get_omap_version);
-

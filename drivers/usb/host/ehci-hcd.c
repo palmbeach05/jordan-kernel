@@ -44,11 +44,6 @@
 #include <asm/system.h>
 #include <asm/unaligned.h>
 
-#ifdef CONFIG_MACH_MAPPHONE
-#include <plat/board-mapphone.h>
-#include <plat/usb.h>
-#endif
-
 /*-------------------------------------------------------------------------*/
 
 /*
@@ -215,7 +210,7 @@ static int handshake_on_error_set_halt(struct ehci_hcd *ehci, void __iomem *ptr,
 	if (error) {
 		ehci_halt(ehci);
 		ehci_to_hcd(ehci)->state = HC_STATE_HALT;
-		ehci_err(ehci, "force halt; handhake %p %08x %08x -> %d\n",
+		ehci_err(ehci, "force halt; handshake %p %08x %08x -> %d\n",
 			ptr, mask, done, error);
 	}
 
@@ -251,22 +246,13 @@ static int ehci_reset (struct ehci_hcd *ehci)
 	if (ehci->debug && !dbgp_reset_prep())
 		ehci->debug = NULL;
 
-#ifndef CONFIG_MAPPHONE_2NDBOOT
 	command |= CMD_RESET;
 	dbg_cmd (ehci, "reset", command);
 	ehci_writel(ehci, command, &ehci->regs->command);
-#else
-	command |= CMD_LRESET;
-	dbg_cmd (ehci, "reset", command);
-#endif
 	ehci_to_hcd(ehci)->state = HC_STATE_HALT;
 	ehci->next_statechange = jiffies;
-#ifndef CONFIG_MAPPHONE_2NDBOOT
 	retval = handshake (ehci, &ehci->regs->command,
 			    CMD_RESET, 0, 250 * 1000);
-#else
-	retval = 0;
-#endif
 
 	if (ehci->has_hostpc) {
 		ehci_writel(ehci, USBMODE_EX_HC | USBMODE_EX_VBPS,
@@ -563,7 +549,7 @@ static int ehci_init(struct usb_hcd *hcd)
 	/* controllers may cache some of the periodic schedule ... */
 	hcc_params = ehci_readl(ehci, &ehci->caps->hcc_params);
 	if (HCC_ISOC_CACHE(hcc_params))		// full frame cache
-		ehci->i_thresh = 8;
+		ehci->i_thresh = 2 + 8;
 	else					// N microframes cached
 		ehci->i_thresh = 2 + HCC_ISOC_THRES(hcc_params);
 
@@ -619,6 +605,8 @@ static int ehci_init(struct usb_hcd *hcd)
 	}
 	ehci->command = temp;
 
+	/* Accept arbitrarily long scatter-gather lists */
+	hcd->self.sg_tablesize = ~0;
 	return 0;
 }
 
@@ -714,21 +702,6 @@ static int ehci_run (struct usb_hcd *hcd)
 }
 
 /*-------------------------------------------------------------------------*/
-#ifdef CONFIG_MACH_MAPPHONE
-void clear_ehci_intr(struct usb_hcd *hcd)
-{
-	struct ehci_hcd		*ehci = hcd_to_ehci(hcd);
-	u32			status;
-	u32			enable;
-	status = ehci_readl(ehci, &ehci->regs->status);
-	enable = ehci_readl(ehci, &ehci->regs->intr_enable);
-	ehci_writel(ehci, status, &ehci->regs->status);
-	printk(KERN_INFO "USBHOST:%s():status=0x%x, INTR_MASK=0x%x, enable=0x%x\n",
-	__func__, status, INTR_MASK, enable);
-	return;
-}
-EXPORT_SYMBOL(clear_ehci_intr);
-#endif
 
 static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 {
@@ -768,9 +741,8 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 	if (likely ((status & (STS_INT|STS_ERR)) != 0)) {
 		if (likely ((status & STS_ERR) == 0))
 			COUNT (ehci->stats.normal);
-		else {
+		else
 			COUNT (ehci->stats.error);
-		}
 		bh = 1;
 	}
 
@@ -785,9 +757,8 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 		if (ehci->reclaim) {
 			COUNT(ehci->stats.reclaim);
 			end_unlink_async(ehci);
-		} else {
+		} else
 			ehci_dbg(ehci, "IAA with nothing to reclaim?\n");
-		}
 	}
 
 	/* remote wakeup [4.3.1] */
@@ -798,9 +769,8 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 		pcd_status = status;
 
 		/* resume root hub? */
-		if (!(cmd & CMD_RUN)) {
+		if (!(cmd & CMD_RUN))
 			usb_hcd_resume_root_hub(hcd);
-		}
 
 		while (i--) {
 			int pstatus = ehci_readl(ehci,
@@ -817,15 +787,11 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 
 			/* start 20 msec resume signaling from this port,
 			 * and make khubd collect PORT_STAT_C_SUSPEND to
-			 * stop that signaling.  Use 5 ms extra for safety,
-			 * like usb_port_resume() does.
+			 * stop that signaling.
 			 */
-			ehci->reset_done[i] = jiffies + msecs_to_jiffies(25);
+			ehci->reset_done [i] = jiffies + msecs_to_jiffies (20);
 			ehci_dbg (ehci, "port %d remote wakeup\n", i + 1);
 			mod_timer(&hcd->rh_timer, ehci->reset_done[i]);
-#ifdef CONFIG_HAS_WAKELOCK
-			wake_lock_timeout(&ehci->wake_lock_ehci_rwu, HZ/2);
-#endif
 		}
 	}
 
@@ -1141,6 +1107,11 @@ MODULE_LICENSE ("GPL");
 #define	PLATFORM_DRIVER		ehci_fsl_driver
 #endif
 
+#ifdef CONFIG_USB_EHCI_MXC
+#include "ehci-mxc.c"
+#define PLATFORM_DRIVER		ehci_mxc_driver
+#endif
+
 #ifdef CONFIG_SOC_AU1200
 #include "ehci-au1xxx.c"
 #define	PLATFORM_DRIVER		ehci_hcd_au1xxx_driver
@@ -1159,6 +1130,11 @@ MODULE_LICENSE ("GPL");
 #ifdef CONFIG_USB_EHCI_HCD_PPC_OF
 #include "ehci-ppc-of.c"
 #define OF_PLATFORM_DRIVER	ehci_hcd_ppc_of_driver
+#endif
+
+#ifdef CONFIG_XPS_USB_HCD_XILINX
+#include "ehci-xilinx-of.c"
+#define OF_PLATFORM_DRIVER	ehci_hcd_xilinx_of_driver
 #endif
 
 #ifdef CONFIG_PLAT_ORION

@@ -49,6 +49,7 @@
 #include <linux/init_task.h>
 #include <linux/perf_event.h>
 #include <trace/events/sched.h>
+#include <linux/hw_breakpoint.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -508,8 +509,6 @@ struct files_struct *get_files_struct(struct task_struct *task)
 	return files;
 }
 
-EXPORT_SYMBOL(get_files_struct);
-
 void put_files_struct(struct files_struct *files)
 {
 	struct fdtable *fdt;
@@ -528,8 +527,6 @@ void put_files_struct(struct files_struct *files)
 		free_fdtable(fdt);
 	}
 }
-
-EXPORT_SYMBOL(put_files_struct);
 
 void reset_files_struct(struct files_struct *files)
 {
@@ -698,11 +695,11 @@ static void exit_mm(struct task_struct * tsk)
 }
 
 /*
- * When we die, we re-parent all our children, and try to:
- * 1. give them to another thread in our thread group, if such a member exists
- * 2. give it to the first ancestor process which prctl'd itself as a
- *    child_subreaper for its children (like a service manager)
- * 3. give it to the init process (PID 1) in our pid namespace
+ * When we die, we re-parent all our children.
+ * Try to give them to another thread in our thread
+ * group, and if no such member exists, give it to
+ * the child reaper process (ie "init") in our pid
+ * space.
  */
 static struct task_struct *find_new_reaper(struct task_struct *father)
 {
@@ -731,29 +728,6 @@ static struct task_struct *find_new_reaper(struct task_struct *father)
 		 * forget_original_parent() must move them somewhere.
 		 */
 		pid_ns->child_reaper = init_pid_ns.child_reaper;
-	} else if (father->signal->has_child_subreaper) {
-		struct task_struct *reaper;
-
-		/*
-		 * Find the first ancestor marked as child_subreaper.
-		 * Note that the code below checks same_thread_group(reaper,
-		 * pid_ns->child_reaper).  This is what we need to DTRT in a
-		 * PID namespace. However we still need the check above, see
-		 * http://marc.info/?l=linux-kernel&m=131385460420380
-		 */
-		for (reaper = father->real_parent;
-		     reaper != &init_task;
-		     reaper = reaper->real_parent) {
-			if (same_thread_group(reaper, pid_ns->child_reaper))
-				break;
-			if (!reaper->signal->is_child_subreaper)
-				continue;
-			thread = reaper;
-			do {
-				if (!(thread->flags & PF_EXITING))
-					return reaper;
-			} while_each_thread(reaper, thread);
-		}
 	}
 
 	return pid_ns->child_reaper;
@@ -970,8 +944,7 @@ NORET_TYPE void do_exit(long code)
 				preempt_count());
 
 	acct_update_integrals(tsk);
-	/* sync mm's RSS info before statistics gathering */
-	sync_mm_rss(tsk, tsk->mm);
+
 	group_dead = atomic_dec_and_test(&tsk->signal->live);
 	if (group_dead) {
 		hrtimer_cancel(&tsk->signal->real_timer);
@@ -1001,13 +974,17 @@ NORET_TYPE void do_exit(long code)
 	exit_thread();
 	cgroup_exit(tsk, 1);
 
-	if (group_dead && tsk->signal->leader)
+	if (group_dead)
 		disassociate_ctty(1);
 
 	module_put(task_thread_info(tsk)->exec_domain->module);
 
 	proc_exit_connector(tsk);
 
+	/*
+	 * FIXME: do that only when needed, using sched_exit tracepoint
+	 */
+	flush_ptrace_hw_breakpoint(tsk);
 	/*
 	 * Flush inherited counters to the parent - before the parent
 	 * gets woken up by child-exit notifications.

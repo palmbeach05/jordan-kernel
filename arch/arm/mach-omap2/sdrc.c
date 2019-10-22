@@ -44,7 +44,6 @@ struct omap2_sms_regs {
 static struct omap2_sms_regs sms_context;
 
 /* SDRC_POWER register bits */
-#define SDRC_POWER_SRFRONRESET			7
 #define SDRC_POWER_EXTCLKDIS_SHIFT		3
 #define SDRC_POWER_PWDENA_SHIFT			2
 #define SDRC_POWER_PAGEPOLICY_SHIFT		0
@@ -156,17 +155,9 @@ void __init omap2_sdrc_init(struct omap_sdrc_params *sdrc_cs0,
 	 * PWDENA should not be set due to 34xx erratum 1.150 - PWDENA
 	 * can cause random memory corruption
 	 */
-	l = (1 << SDRC_POWER_SRFRONRESET) |
-		(1 << SDRC_POWER_EXTCLKDIS_SHIFT) |
+	l = (1 << SDRC_POWER_EXTCLKDIS_SHIFT) |
 		(1 << SDRC_POWER_PAGEPOLICY_SHIFT);
-
-	/* Remove Errata work around for OMAP3630 only
-	 * It is corrected,enable Power Down mode for power saving
-	 */
-	if (cpu_is_omap3630())
-		l |= 1 << SDRC_POWER_PWDENA_SHIFT;
 	sdrc_write_reg(l, SDRC_POWER);
-
 	omap2_sms_save_context();
 }
 

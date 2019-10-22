@@ -34,11 +34,6 @@
 #include <linux/syscalls.h>
 #include <linux/buffer_head.h>
 #include <linux/pagevec.h>
-#ifdef CONFIG_WRITEBACK_CONTROL
-#include <linux/earlysuspend.h>
-
-extern bool writeback(void);
-#endif
 
 /*
  * After a CPU has dirtied this many pages, balance_dirty_pages_ratelimited
@@ -93,11 +88,7 @@ unsigned long vm_dirty_bytes;
 /*
  * The interval between `kupdate'-style writebacks
  */
-#ifdef CONFIG_WRITEBACK_CONTROL
-unsigned int dirty_writeback_interval = 10 * 100; /* centiseconds */
-#else
-unsigned int dirty_writeback_interval = 6 * 100; /* centiseconds */
-#endif
+unsigned int dirty_writeback_interval = 5 * 100; /* centiseconds */
 
 /*
  * The longest time for which data is allowed to remain dirty
@@ -781,39 +772,6 @@ static struct notifier_block __cpuinitdata ratelimit_nb = {
 	.next		= NULL,
 };
 
-#ifdef CONFIG_WRITEBACK_CONTROL
-static void dirty_early_suspend(struct early_suspend *handler)
-{
-        if (writeback()) {
-                dirty_writeback_interval = 5 * 100;
-                dirty_expire_interval = 5 * 1000;
-        }
-        else {
-                // We need to set it to default:
-                dirty_writeback_interval = 6 * 100;
-                dirty_expire_interval = 6 * 1000;
-        }
-}
-
-static void dirty_late_resume(struct early_suspend *handler)
-{
-        if (writeback()) {
-                dirty_writeback_interval = 2 * 2000;
-                dirty_expire_interval = 10 * 1000; 
-        }
-        else {
-                // We need to set it to default:
-                dirty_writeback_interval = 6 * 100;
-                dirty_expire_interval = 6 * 1000;
-        }
-}
-
-static struct early_suspend dirty_suspend = {
-        .suspend = dirty_early_suspend,
-        .resume = dirty_late_resume,
-};
-#endif
-
 /*
  * Called early on to tune the page writeback dirty limits.
  *
@@ -836,9 +794,6 @@ void __init page_writeback_init(void)
 {
 	int shift;
 
-#ifdef CONFIG_WRITEBACK_CONTROL
-	register_early_suspend(&dirty_suspend);
-#endif
 	writeback_set_ratelimit();
 	register_cpu_notifier(&ratelimit_nb);
 
@@ -866,7 +821,6 @@ int write_cache_pages(struct address_space *mapping,
 		      struct writeback_control *wbc, writepage_t writepage,
 		      void *data)
 {
-	struct backing_dev_info *bdi = mapping->backing_dev_info;
 	int ret = 0;
 	int done = 0;
 	struct pagevec pvec;
@@ -878,11 +832,6 @@ int write_cache_pages(struct address_space *mapping,
 	int cycled;
 	int range_whole = 0;
 	long nr_to_write = wbc->nr_to_write;
-
-	if (wbc->nonblocking && bdi_write_congested(bdi)) {
-		wbc->encountered_congestion = 1;
-		return 0;
-	}
 
 	pagevec_init(&pvec, 0);
 	if (wbc->range_cyclic) {
@@ -1001,12 +950,6 @@ continue_unlock:
 					done = 1;
 					break;
 				}
-			}
-
-			if (wbc->nonblocking && bdi_write_congested(bdi)) {
-				wbc->encountered_congestion = 1;
-				done = 1;
-				break;
 			}
 		}
 		pagevec_release(&pvec);

@@ -116,7 +116,7 @@ static struct xattr_handler *ext3_xattr_handler_map[] = {
 #endif
 };
 
-const struct xattr_handler *ext3_xattr_handlers[] = {
+struct xattr_handler *ext3_xattr_handlers[] = {
 	&ext3_xattr_user_handler,
 	&ext3_xattr_trusted_handler,
 #ifdef CONFIG_EXT3_FS_POSIX_ACL
@@ -963,6 +963,10 @@ ext3_xattr_set_handle(handle_t *handle, struct inode *inode, int name_index,
 	if (error)
 		goto cleanup;
 
+	error = ext3_journal_get_write_access(handle, is.iloc.bh);
+	if (error)
+		goto cleanup;
+
 	if (EXT3_I(inode)->i_state & EXT3_STATE_NEW) {
 		struct ext3_inode *raw_inode = ext3_raw_inode(&is.iloc);
 		memset(raw_inode, 0, EXT3_SB(inode->i_sb)->s_inode_size);
@@ -988,9 +992,6 @@ ext3_xattr_set_handle(handle_t *handle, struct inode *inode, int name_index,
 		if (flags & XATTR_CREATE)
 			goto cleanup;
 	}
-	error = ext3_journal_get_write_access(handle, is.iloc.bh);
-	if (error)
-		goto cleanup;
 	if (!value) {
 		if (!is.s.not_found)
 			error = ext3_xattr_ibody_set(handle, inode, &i, &is);

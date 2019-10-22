@@ -2,9 +2,6 @@
 # Makefile for the linux kernel.
 #
 
-CFLAGS_REMOVE_common.o = -pg
-CFLAGS_REMOVE_io.o = -pg
-
 # Common support
 obj-y := common.o sram.o clock.o devices.o dma.o mux.o gpio.o \
 	 usb.o fb.o io.o
@@ -34,5 +31,3 @@ obj-y += $(i2c-omap-m) $(i2c-omap-y)
 obj-$(CONFIG_OMAP_MBOX_FWK) += mailbox.o
 
 obj-$(CONFIG_OMAP_PM_NOOP) += omap-pm-noop.o
-obj-$(CONFIG_OMAP_PM_SRF) += omap-pm-srf.o \
-				resource.o

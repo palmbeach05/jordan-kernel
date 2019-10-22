@@ -70,7 +70,7 @@ struct acpi_table_attr {
 	struct list_head node;
 };
 
-static ssize_t acpi_table_show(struct file *filp, struct kobject *kobj,
+static ssize_t acpi_table_show(struct kobject *kobj,
 			       struct bin_attribute *bin_attr, char *buf,
 			       loff_t offset, size_t count)
 {
@@ -101,7 +101,6 @@ static void acpi_table_attr_init(struct acpi_table_attr *table_attr,
 	struct acpi_table_header *header = NULL;
 	struct acpi_table_attr *attr = NULL;
 
-	sysfs_attr_init(&table_attr->attr.attr);
 	if (table_header->signature[0] != '\0')
 		memcpy(table_attr->name, table_header->signature,
 			ACPI_NAME_SIZE);
@@ -476,7 +475,6 @@ void acpi_irq_stats_init(void)
 			goto fail;
 		strncpy(name, buffer, strlen(buffer) + 1);
 
-		sysfs_attr_init(&counter_attrs[i].attr);
 		counter_attrs[i].attr.name = name;
 		counter_attrs[i].attr.mode = 0644;
 		counter_attrs[i].show = counter_show;

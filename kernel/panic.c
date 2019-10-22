@@ -10,6 +10,7 @@
  */
 #include <linux/debug_locks.h>
 #include <linux/interrupt.h>
+#include <linux/kmsg_dump.h>
 #include <linux/kallsyms.h>
 #include <linux/notifier.h>
 #include <linux/module.h>
@@ -22,9 +23,6 @@
 #include <linux/init.h>
 #include <linux/nmi.h>
 #include <linux/dmi.h>
-#include <trace/kernel.h>
-
-DEFINE_TRACE(kernel_panic);
 
 int panic_on_oops;
 static unsigned long tainted_mask;
@@ -32,10 +30,7 @@ static int pause_on_oops;
 static int pause_on_oops_flag;
 static DEFINE_SPINLOCK(pause_on_oops_lock);
 
-#ifndef CONFIG_PANIC_TIMEOUT
-#define CONFIG_PANIC_TIMEOUT 0
-#endif
-int panic_timeout = CONFIG_PANIC_TIMEOUT;
+int panic_timeout;
 
 ATOMIC_NOTIFIER_HEAD(panic_notifier_list);
 
@@ -64,10 +59,6 @@ NORET_TYPE void panic(const char * fmt, ...)
 	va_list args;
 	long i;
 
-	va_start(args, fmt);
-	trace_kernel_panic(fmt, args);
-	va_end(args);
-
 	/*
 	 * It's possible to come here directly from a panic-assertion and
 	 * not have preempt disabled. Some functions called from here want
@@ -84,6 +75,7 @@ NORET_TYPE void panic(const char * fmt, ...)
 	dump_stack();
 #endif
 
+	kmsg_dump(KMSG_DUMP_PANIC);
 	/*
 	 * If we have crashed and we have a crash kernel loaded let it handle
 	 * everything else.
@@ -349,6 +341,7 @@ void oops_exit(void)
 {
 	do_oops_enter_exit();
 	print_oops_end_marker();
+	kmsg_dump(KMSG_DUMP_OOPS);
 }
 
 #ifdef WANT_WARN_ON_SLOWPATH
@@ -357,8 +350,7 @@ struct slowpath_args {
 	va_list args;
 };
 
-static void warn_slowpath_common(const char *file, int line, void *caller,
-				 unsigned taint, struct slowpath_args *args)
+static void warn_slowpath_common(const char *file, int line, void *caller, struct slowpath_args *args)
 {
 	const char *board;
 
@@ -374,7 +366,7 @@ static void warn_slowpath_common(const char *file, int line, void *caller,
 	print_modules();
 	dump_stack();
 	print_oops_end_marker();
-	add_taint(taint);
+	add_taint(TAINT_WARN);
 }
 
 void warn_slowpath_fmt(const char *file, int line, const char *fmt, ...)
@@ -383,29 +375,14 @@ void warn_slowpath_fmt(const char *file, int line, const char *fmt, ...)
 
 	args.fmt = fmt;
 	va_start(args.args, fmt);
-	warn_slowpath_common(file, line, __builtin_return_address(0),
-			     TAINT_WARN, &args);
+	warn_slowpath_common(file, line, __builtin_return_address(0), &args);
 	va_end(args.args);
 }
 EXPORT_SYMBOL(warn_slowpath_fmt);
 
-void warn_slowpath_fmt_taint(const char *file, int line,
-			     unsigned taint, const char *fmt, ...)
-{
-	struct slowpath_args args;
-
-	args.fmt = fmt;
-	va_start(args.args, fmt);
-	warn_slowpath_common(file, line, __builtin_return_address(0),
-			     taint, &args);
-	va_end(args.args);
-}
-EXPORT_SYMBOL(warn_slowpath_fmt_taint);
-
 void warn_slowpath_null(const char *file, int line)
 {
-	warn_slowpath_common(file, line, __builtin_return_address(0),
-			     TAINT_WARN, NULL);
+	warn_slowpath_common(file, line, __builtin_return_address(0), NULL);
 }
 EXPORT_SYMBOL(warn_slowpath_null);
 #endif

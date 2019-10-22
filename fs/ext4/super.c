@@ -39,7 +39,6 @@
 #include <linux/ctype.h>
 #include <linux/log2.h>
 #include <linux/crc16.h>
-#include <linux/cleancache.h>
 #include <asm/uaccess.h>
 
 #include "ext4.h"
@@ -334,7 +333,7 @@ static void ext4_handle_error(struct super_block *sb)
 			sb->s_id);
 }
 
-void __ext4_error(struct super_block *sb, const char *function,
+void ext4_error(struct super_block *sb, const char *function,
 		const char *fmt, ...)
 {
 	va_list args;
@@ -451,7 +450,7 @@ void ext4_msg (struct super_block * sb, const char *prefix,
 	va_end(args);
 }
 
-void __ext4_warning(struct super_block *sb, const char *function,
+void ext4_warning(struct super_block *sb, const char *function,
 		  const char *fmt, ...)
 {
 	va_list args;
@@ -508,7 +507,7 @@ void ext4_update_dynamic_rev(struct super_block *sb)
 	if (le32_to_cpu(es->s_rev_level) > EXT4_GOOD_OLD_REV)
 		return;
 
-	ext4_warning(sb,
+	ext4_warning(sb, __func__,
 		     "updating to rev %d because of new feature flag, "
 		     "running e2fsck is recommended",
 		     EXT4_DYNAMIC_REV);
@@ -705,9 +704,6 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 	ei->i_allocated_meta_blocks = 0;
 	ei->i_delalloc_reserved_flag = 0;
 	spin_lock_init(&(ei->i_block_reservation_lock));
-#ifdef CONFIG_QUOTA
-	ei->i_reserved_quota = 0;
-#endif
 	INIT_LIST_HEAD(&ei->i_aio_dio_complete_list);
 	ei->cur_aio_dio = NULL;
 	ei->i_sync_tid = 0;
@@ -1018,9 +1014,7 @@ static const struct dquot_operations ext4_quota_operations = {
 	.reserve_space	= dquot_reserve_space,
 	.claim_space	= dquot_claim_space,
 	.release_rsv	= dquot_release_reserved_space,
-#ifdef CONFIG_QUOTA
 	.get_reserved_space = ext4_get_reserved_space,
-#endif
 	.alloc_inode	= dquot_alloc_inode,
 	.free_space	= dquot_free_space,
 	.free_inode	= dquot_free_inode,
@@ -1704,7 +1698,6 @@ static int ext4_setup_super(struct super_block *sb, struct ext4_super_block *es,
 			EXT4_INODES_PER_GROUP(sb),
 			sbi->s_mount_opt);
 
-	cleancache_init_fs(sb);
 	return res;
 }
 
@@ -2293,7 +2286,7 @@ static void ext4_sb_release(struct kobject *kobj)
 }
 
 
-static const struct sysfs_ops ext4_attr_ops = {
+static struct sysfs_ops ext4_attr_ops = {
 	.show	= ext4_attr_show,
 	.store	= ext4_attr_store,
 };
@@ -2763,26 +2756,6 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	    EXT4_HAS_COMPAT_FEATURE(sb, EXT4_FEATURE_COMPAT_HAS_JOURNAL)) {
 		if (ext4_load_journal(sb, es, journal_devnum))
 			goto failed_mount3;
-		if (!(sb->s_flags & MS_RDONLY) &&
-		    EXT4_SB(sb)->s_journal->j_failed_commit) {
-			ext4_msg(sb, KERN_CRIT, "error: "
-			       "ext4_fill_super: Journal transaction "
-			       "%u is corrupt",
-			       EXT4_SB(sb)->s_journal->j_failed_commit);
-			if (test_opt(sb, ERRORS_RO)) {
-				ext4_msg(sb, KERN_CRIT,
-				       "Mounting filesystem read-only");
-				sb->s_flags |= MS_RDONLY;
-				EXT4_SB(sb)->s_mount_state |= EXT4_ERROR_FS;
-				es->s_state |= cpu_to_le16(EXT4_ERROR_FS);
-			}
-			if (test_opt(sb, ERRORS_PANIC)) {
-				EXT4_SB(sb)->s_mount_state |= EXT4_ERROR_FS;
-				es->s_state |= cpu_to_le16(EXT4_ERROR_FS);
-				ext4_commit_super(sb, 1);
-				goto failed_mount4;
-			}
-		}
 	} else if (test_opt(sb, NOLOAD) && !(sb->s_flags & MS_RDONLY) &&
 	      EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_RECOVER)) {
 		ext4_msg(sb, KERN_ERR, "required journal recovery "
@@ -3381,9 +3354,10 @@ static void ext4_clear_journal_err(struct super_block *sb,
 		char nbuf[16];
 
 		errstr = ext4_decode_error(sb, j_errno, nbuf);
-		ext4_warning(sb, "Filesystem error recorded "
+		ext4_warning(sb, __func__, "Filesystem error recorded "
 			     "from previous mount: %s", errstr);
-		ext4_warning(sb, "Marking fs in need of filesystem check.");
+		ext4_warning(sb, __func__, "Marking fs in need of "
+			     "filesystem check.");
 
 		EXT4_SB(sb)->s_mount_state |= EXT4_ERROR_FS;
 		es->s_state |= cpu_to_le16(EXT4_ERROR_FS);
@@ -4005,7 +3979,7 @@ static int ext4_get_sb(struct file_system_type *fs_type, int flags,
 	return get_sb_bdev(fs_type, flags, dev_name, data, ext4_fill_super,mnt);
 }
 
-#if !defined(CONTIG_EXT2_FS) && defined(CONFIG_EXT4_USE_FOR_EXT23)
+#if !defined(CONTIG_EXT2_FS) && !defined(CONFIG_EXT2_FS_MODULE) && defined(CONFIG_EXT4_USE_FOR_EXT23)
 static struct file_system_type ext2_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "ext2",
@@ -4031,7 +4005,7 @@ static inline void register_as_ext2(void) { }
 static inline void unregister_as_ext2(void) { }
 #endif
 
-#if !defined(CONTIG_EXT3_FS) && defined(CONFIG_EXT4_USE_FOR_EXT23)
+#if !defined(CONTIG_EXT3_FS) && !defined(CONFIG_EXT3_FS_MODULE) && defined(CONFIG_EXT4_USE_FOR_EXT23)
 static struct file_system_type ext3_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "ext3",

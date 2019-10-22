@@ -82,7 +82,7 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm);
 static struct linux_binfmt elf_fdpic_format = {
 	.module		= THIS_MODULE,
 	.load_binary	= load_elf_fdpic_binary,
-#if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
+#ifdef CONFIG_ELF_CORE
 	.core_dump	= elf_fdpic_core_dump,
 #endif
 	.min_coredump	= ELF_EXEC_PAGESIZE,
@@ -170,9 +170,6 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm,
 	unsigned long stack_size, entryaddr;
 #ifdef ELF_FDPIC_PLAT_INIT
 	unsigned long dynaddr;
-#endif
-#ifndef CONFIG_MMU
-	unsigned long stack_prot;
 #endif
 	struct file *interpreter = NULL; /* to shut gcc up */
 	char *interpreter_name = NULL;
@@ -319,11 +316,6 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm,
 	 * defunct, deceased, etc. after this point we have to exit via
 	 * error_kill */
 	set_personality(PER_LINUX_FDPIC);
-	if (elf_read_implies_exec(&exec_params.hdr, executable_stack))
-		current->personality |= READ_IMPLIES_EXEC;
-
-	setup_new_exec(bprm);
-
 	set_binfmt(&elf_fdpic_format);
 
 	current->mm->start_code = 0;
@@ -384,11 +376,6 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm,
 	stack_size = (stack_size + PAGE_SIZE - 1) & PAGE_MASK;
 	if (stack_size < PAGE_SIZE * 2)
 		stack_size = PAGE_SIZE * 2;
-
-	stack_prot = PROT_READ | PROT_WRITE;
-	if (executable_stack == EXSTACK_ENABLE_X ||
-	    (executable_stack == EXSTACK_DEFAULT && VM_STACK_FLAGS & VM_EXEC))
-		stack_prot |= PROT_EXEC;
 
 	down_write(&current->mm->mmap_sem);
 	current->mm->start_brk = do_mmap(NULL, 0, stack_size,
@@ -1214,7 +1201,7 @@ static int elf_fdpic_map_file_by_direct_mmap(struct elf_fdpic_params *params,
  *
  * Modelled on fs/binfmt_elf.c core dumper
  */
-#if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
+#ifdef CONFIG_ELF_CORE
 
 /*
  * These are the only things you should do on a core-file: use only these
@@ -1840,4 +1827,4 @@ cleanup:
 #undef NUM_NOTES
 }
 
-#endif		/* USE_ELF_CORE_DUMP */
+#endif		/* CONFIG_ELF_CORE */

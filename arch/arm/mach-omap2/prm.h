@@ -4,8 +4,8 @@
 /*
  * OMAP2/3 Power/Reset Management (PRM) register definitions
  *
- * Copyright (C) 2007 Texas Instruments, Inc.
- * Copyright (C) 2007 Nokia Corporation
+ * Copyright (C) 2007-2009 Texas Instruments, Inc.
+ * Copyright (C) 2009 Nokia Corporation
  *
  * Written by Paul Walmsley
  *
@@ -22,6 +22,10 @@
 		OMAP2_L4_IO_ADDRESS(OMAP2430_PRM_BASE + (module) + (reg))
 #define OMAP34XX_PRM_REGADDR(module, reg)				\
 		OMAP2_L4_IO_ADDRESS(OMAP3430_PRM_BASE + (module) + (reg))
+#define OMAP44XX_PRM_REGADDR(module, reg)				\
+		OMAP2_L4_IO_ADDRESS(OMAP4430_PRM_BASE + (module) + (reg))
+
+#include "prm44xx.h"
 
 /*
  * Architecture-specific global PRM registers
@@ -159,10 +163,6 @@
 #define OMAP3430_PRM_CLKSEL		OMAP34XX_PRM_REGADDR(OMAP3430_CCR_MOD, 0x0040)
 #define OMAP3_PRM_CLKOUT_CTRL_OFFSET	0x0070
 #define OMAP3430_PRM_CLKOUT_CTRL	OMAP34XX_PRM_REGADDR(OMAP3430_CCR_MOD, 0x0070)
-
-/* 36xx register offsets in GR_MOD */
-#define OMAP3_PRM_LDO_ABB_SETUP_OFFSET         0X00f0
-#define OMAP3_PRM_LDO_ABB_CTRL_OFFSET          0x00f4
 
 /*
  * Module specific PRM registers from PRM_BASE + domain offset

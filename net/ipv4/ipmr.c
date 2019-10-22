@@ -275,7 +275,8 @@ failure:
  *	@notify: Set to 1, if the caller is a notifier_call
  */
 
-static int vif_delete(struct net *net, int vifi, int notify)
+static int vif_delete(struct net *net, int vifi, int notify,
+		      struct list_head *head)
 {
 	struct vif_device *v;
 	struct net_device *dev;
@@ -319,7 +320,7 @@ static int vif_delete(struct net *net, int vifi, int notify)
 	}
 
 	if (v->flags&(VIFF_TUNNEL|VIFF_REGISTER) && !notify)
-		unregister_netdevice(dev);
+		unregister_netdevice_queue(dev, head);
 
 	dev_put(dev);
 	return 0;
@@ -469,8 +470,18 @@ static int vif_add(struct net *net, struct vifctl *vifc, int mrtsock)
 			return err;
 		}
 		break;
+
+	case VIFF_USE_IFINDEX:
 	case 0:
-		dev = ip_dev_find(net, vifc->vifc_lcl_addr.s_addr);
+		if (vifc->vifc_flags == VIFF_USE_IFINDEX) {
+			dev = dev_get_by_index(net, vifc->vifc_lcl_ifindex);
+			if (dev && dev->ip_ptr == NULL) {
+				dev_put(dev);
+				return -EADDRNOTAVAIL;
+			}
+		} else
+			dev = ip_dev_find(net, vifc->vifc_lcl_addr.s_addr);
+
 		if (!dev)
 			return -EADDRNOTAVAIL;
 		err = dev_set_allmulti(dev, 1);
@@ -742,8 +753,7 @@ ipmr_cache_unresolved(struct net *net, vifi_t vifi, struct sk_buff *skb)
 		c->next = mfc_unres_queue;
 		mfc_unres_queue = c;
 
-		if (atomic_read(&net->ipv4.cache_resolve_queue_len) == 1)
-			mod_timer(&ipmr_expire_timer, c->mfc_un.unres.expires);
+		mod_timer(&ipmr_expire_timer, c->mfc_un.unres.expires);
 	}
 
 	/*
@@ -791,9 +801,6 @@ static int ipmr_mfc_add(struct net *net, struct mfcctl *mfc, int mrtsock)
 {
 	int line;
 	struct mfc_cache *uc, *c, **cp;
-
-	if (mfc->mfcc_parent >= MAXVIFS)
-		return -ENFILE;
 
 	line = MFC_HASH(mfc->mfcc_mcastgrp.s_addr, mfc->mfcc_origin.s_addr);
 
@@ -866,14 +873,16 @@ static int ipmr_mfc_add(struct net *net, struct mfcctl *mfc, int mrtsock)
 static void mroute_clean_tables(struct net *net)
 {
 	int i;
+	LIST_HEAD(list);
 
 	/*
 	 *	Shut down all active vif entries
 	 */
 	for (i = 0; i < net->ipv4.maxvif; i++) {
 		if (!(net->ipv4.vif_table[i].flags&VIFF_STATIC))
-			vif_delete(net, i, 0);
+			vif_delete(net, i, 0, &list);
 	}
+	unregister_netdevice_many(&list);
 
 	/*
 	 *	Wipe the cache
@@ -952,7 +961,7 @@ int ip_mroute_setsockopt(struct sock *sk, int optname, char __user *optval, unsi
 	switch (optname) {
 	case MRT_INIT:
 		if (sk->sk_type != SOCK_RAW ||
-		    inet_sk(sk)->num != IPPROTO_IGMP)
+		    inet_sk(sk)->inet_num != IPPROTO_IGMP)
 			return -EOPNOTSUPP;
 		if (optlen != sizeof(int))
 			return -ENOPROTOOPT;
@@ -989,7 +998,7 @@ int ip_mroute_setsockopt(struct sock *sk, int optname, char __user *optval, unsi
 		if (optname == MRT_ADD_VIF) {
 			ret = vif_add(net, &vif, sk == net->ipv4.mroute_sk);
 		} else {
-			ret = vif_delete(net, vif.vifc_vifi, 0);
+			ret = vif_delete(net, vif.vifc_vifi, 0, NULL);
 		}
 		rtnl_unlock();
 		return ret;
@@ -1152,6 +1161,7 @@ static int ipmr_device_event(struct notifier_block *this, unsigned long event, v
 	struct net *net = dev_net(dev);
 	struct vif_device *v;
 	int ct;
+	LIST_HEAD(list);
 
 	if (!net_eq(dev_net(dev), net))
 		return NOTIFY_DONE;
@@ -1161,8 +1171,9 @@ static int ipmr_device_event(struct notifier_block *this, unsigned long event, v
 	v = &net->ipv4.vif_table[0];
 	for (ct = 0; ct < net->ipv4.maxvif; ct++, v++) {
 		if (v->dev == dev)
-			vif_delete(net, ct, 1);
+			vif_delete(net, ct, 1, &list);
 	}
+	unregister_netdevice_many(&list);
 	return NOTIFY_DONE;
 }
 

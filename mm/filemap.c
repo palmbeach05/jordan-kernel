@@ -34,8 +34,6 @@
 #include <linux/hardirq.h> /* for BUG_ON(!in_atomic()) only */
 #include <linux/memcontrol.h>
 #include <linux/mm_inline.h> /* for page_is_file_cache() */
-#include <trace/filemap.h>
-#include <linux/cleancache.h>
 #include "internal.h"
 
 /*
@@ -44,11 +42,6 @@
 #include <linux/buffer_head.h> /* for try_to_free_buffers */
 
 #include <asm/mman.h>
-
-DEFINE_TRACE(wait_on_page_start);
-DEFINE_TRACE(wait_on_page_end);
-DEFINE_TRACE(add_to_page_cache);
-DEFINE_TRACE(remove_from_page_cache);
 
 /*
  * Shared mappings implemented 30.11.1994. It's not fully working yet,
@@ -126,21 +119,10 @@ void __remove_from_page_cache(struct page *page)
 {
 	struct address_space *mapping = page->mapping;
 
-	/*
-	 * if we're uptodate, flush out into the cleancache, otherwise
-	 * invalidate any existing cleancache entries.  We can't leave
-	 * stale data around in the cleancache once our page is gone
-	 */
-	if (PageUptodate(page) && PageMappedToDisk(page))
-		cleancache_put_page(page);
-	else
-		cleancache_invalidate_page(mapping, page);
-
 	radix_tree_delete(&mapping->page_tree, page->index);
 	page->mapping = NULL;
 	mapping->nrpages--;
 	__dec_zone_page_state(page, NR_FILE_PAGES);
-	trace_remove_from_page_cache(mapping);
 	if (PageSwapBacked(page))
 		__dec_zone_page_state(page, NR_SHMEM);
 	BUG_ON(page_mapped(page));
@@ -278,27 +260,27 @@ int filemap_flush(struct address_space *mapping)
 EXPORT_SYMBOL(filemap_flush);
 
 /**
- * wait_on_page_writeback_range - wait for writeback to complete
- * @mapping:	target address_space
- * @start:	beginning page index
- * @end:	ending page index
+ * filemap_fdatawait_range - wait for writeback to complete
+ * @mapping:		address space structure to wait for
+ * @start_byte:		offset in bytes where the range starts
+ * @end_byte:		offset in bytes where the range ends (inclusive)
  *
- * Wait for writeback to complete against pages indexed by start->end
- * inclusive
+ * Walk the list of under-writeback pages of the given address space
+ * in the given range and wait for all of them.
  */
-int wait_on_page_writeback_range(struct address_space *mapping,
-				pgoff_t start, pgoff_t end)
+int filemap_fdatawait_range(struct address_space *mapping, loff_t start_byte,
+			    loff_t end_byte)
 {
+	pgoff_t index = start_byte >> PAGE_CACHE_SHIFT;
+	pgoff_t end = end_byte >> PAGE_CACHE_SHIFT;
 	struct pagevec pvec;
 	int nr_pages;
 	int ret = 0;
-	pgoff_t index;
 
-	if (end < start)
+	if (end_byte < start_byte)
 		return 0;
 
 	pagevec_init(&pvec, 0);
-	index = start;
 	while ((index <= end) &&
 			(nr_pages = pagevec_lookup_tag(&pvec, mapping, &index,
 			PAGECACHE_TAG_WRITEBACK,
@@ -328,25 +310,6 @@ int wait_on_page_writeback_range(struct address_space *mapping,
 
 	return ret;
 }
-
-/**
- * filemap_fdatawait_range - wait for all under-writeback pages to complete in a given range
- * @mapping: address space structure to wait for
- * @start:	offset in bytes where the range starts
- * @end:	offset in bytes where the range ends (inclusive)
- *
- * Walk the list of under-writeback pages of the given address space
- * in the given range and wait for all of them.
- *
- * This is just a simple wrapper so that callers don't have to convert offsets
- * to page indexes themselves
- */
-int filemap_fdatawait_range(struct address_space *mapping, loff_t start,
-			    loff_t end)
-{
-	return wait_on_page_writeback_range(mapping, start >> PAGE_CACHE_SHIFT,
-					    end >> PAGE_CACHE_SHIFT);
-}
 EXPORT_SYMBOL(filemap_fdatawait_range);
 
 /**
@@ -363,8 +326,7 @@ int filemap_fdatawait(struct address_space *mapping)
 	if (i_size == 0)
 		return 0;
 
-	return wait_on_page_writeback_range(mapping, 0,
-				(i_size - 1) >> PAGE_CACHE_SHIFT);
+	return filemap_fdatawait_range(mapping, 0, i_size - 1);
 }
 EXPORT_SYMBOL(filemap_fdatawait);
 
@@ -411,9 +373,8 @@ int filemap_write_and_wait_range(struct address_space *mapping,
 						 WB_SYNC_ALL);
 		/* See comment of filemap_write_and_wait() */
 		if (err != -EIO) {
-			int err2 = wait_on_page_writeback_range(mapping,
-						lstart >> PAGE_CACHE_SHIFT,
-						lend >> PAGE_CACHE_SHIFT);
+			int err2 = filemap_fdatawait_range(mapping,
+						lstart, lend);
 			if (!err)
 				err = err2;
 		}
@@ -455,7 +416,6 @@ int add_to_page_cache_locked(struct page *page, struct address_space *mapping,
 		if (likely(!error)) {
 			mapping->nrpages++;
 			__inc_zone_page_state(page, NR_FILE_PAGES);
-			trace_add_to_page_cache(mapping, offset);
 			if (PageSwapBacked(page))
 				__inc_zone_page_state(page, NR_SHMEM);
 			spin_unlock_irq(&mapping->tree_lock);
@@ -542,11 +502,9 @@ void wait_on_page_bit(struct page *page, int bit_nr)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, bit_nr);
 
-	trace_wait_on_page_start(page, bit_nr);
 	if (test_bit(bit_nr, &page->flags))
 		__wait_on_bit(page_waitqueue(page), &wait, sync_page,
 							TASK_UNINTERRUPTIBLE);
-	trace_wait_on_page_end(page, bit_nr);
 }
 EXPORT_SYMBOL(wait_on_page_bit);
 
@@ -1676,15 +1634,14 @@ EXPORT_SYMBOL(generic_file_readonly_mmap);
 static struct page *__read_cache_page(struct address_space *mapping,
 				pgoff_t index,
 				int (*filler)(void *,struct page*),
-				void *data,
-				gfp_t gfp)
+				void *data)
 {
 	struct page *page;
 	int err;
 repeat:
 	page = find_get_page(mapping, index);
 	if (!page) {
-		page = __page_cache_alloc(gfp | __GFP_COLD);
+		page = page_cache_alloc_cold(mapping);
 		if (!page)
 			return ERR_PTR(-ENOMEM);
 		err = add_to_page_cache_lru(page, mapping, index, GFP_KERNEL);
@@ -1704,18 +1661,31 @@ repeat:
 	return page;
 }
 
-static struct page *do_read_cache_page(struct address_space *mapping,
+/**
+ * read_cache_page_async - read into page cache, fill it if needed
+ * @mapping:	the page's address_space
+ * @index:	the page index
+ * @filler:	function to perform the read
+ * @data:	destination for read data
+ *
+ * Same as read_cache_page, but don't wait for page to become unlocked
+ * after submitting it to the filler.
+ *
+ * Read into the page cache. If a page already exists, and PageUptodate() is
+ * not set, try to fill the page but don't wait for it to become unlocked.
+ *
+ * If the page does not get brought uptodate, return -EIO.
+ */
+struct page *read_cache_page_async(struct address_space *mapping,
 				pgoff_t index,
 				int (*filler)(void *,struct page*),
-				void *data,
-				gfp_t gfp)
-
+				void *data)
 {
 	struct page *page;
 	int err;
 
 retry:
-	page = __read_cache_page(mapping, index, filler, data, gfp);
+	page = __read_cache_page(mapping, index, filler, data);
 	if (IS_ERR(page))
 		return page;
 	if (PageUptodate(page))
@@ -1740,66 +1710,7 @@ out:
 	mark_page_accessed(page);
 	return page;
 }
-
-/**
- * read_cache_page_async - read into page cache, fill it if needed
- * @mapping:	the page's address_space
- * @index:	the page index
- * @filler:	function to perform the read
- * @data:	destination for read data
- *
- * Same as read_cache_page, but don't wait for page to become unlocked
- * after submitting it to the filler.
- *
- * Read into the page cache. If a page already exists, and PageUptodate() is
- * not set, try to fill the page but don't wait for it to become unlocked.
- *
- * If the page does not get brought uptodate, return -EIO.
- */
-struct page *read_cache_page_async(struct address_space *mapping,
-				pgoff_t index,
-				int (*filler)(void *,struct page*),
-				void *data)
-{
-	return do_read_cache_page(mapping, index, filler, data, mapping_gfp_mask(mapping));
-}
 EXPORT_SYMBOL(read_cache_page_async);
-
-static struct page *wait_on_page_read(struct page *page)
-{
-	if (!IS_ERR(page)) {
-		wait_on_page_locked(page);
-		if (!PageUptodate(page)) {
-			page_cache_release(page);
-			page = ERR_PTR(-EIO);
-		}
-	}
-	return page;
-}
-
-/**
- * read_cache_page_gfp - read into page cache, using specified page allocation flags.
- * @mapping:	the page's address_space
- * @index:	the page index
- * @gfp:	the page allocator flags to use if allocating
- *
- * This is the same as "read_mapping_page(mapping, index, NULL)", but with
- * any new page allocations done using the specified allocation flags. Note
- * that the Radix tree operations will still use GFP_KERNEL, so you can't
- * expect to do this atomically or anything like that - but you can pass in
- * other page requirements.
- *
- * If the page does not get brought uptodate, return -EIO.
- */
-struct page *read_cache_page_gfp(struct address_space *mapping,
-				pgoff_t index,
-				gfp_t gfp)
-{
-	filler_t *filler = (filler_t *)mapping->a_ops->readpage;
-
-	return wait_on_page_read(do_read_cache_page(mapping, index, filler, NULL, gfp));
-}
-EXPORT_SYMBOL(read_cache_page_gfp);
 
 /**
  * read_cache_page - read into page cache, fill it if needed
@@ -1818,7 +1729,18 @@ struct page *read_cache_page(struct address_space *mapping,
 				int (*filler)(void *,struct page*),
 				void *data)
 {
-	return wait_on_page_read(read_cache_page_async(mapping, index, filler, data));
+	struct page *page;
+
+	page = read_cache_page_async(mapping, index, filler, data);
+	if (IS_ERR(page))
+		goto out;
+	wait_on_page_locked(page);
+	if (!PageUptodate(page)) {
+		page_cache_release(page);
+		page = ERR_PTR(-EIO);
+	}
+ out:
+	return page;
 }
 EXPORT_SYMBOL(read_cache_page);
 
@@ -1901,7 +1823,7 @@ static size_t __iovec_copy_from_user_inatomic(char *vaddr,
 
 /*
  * Copy as much as we can into the page and return the number of bytes which
- * were sucessfully copied.  If a fault is encountered then return the number of
+ * were successfully copied.  If a fault is encountered then return the number of
  * bytes which were copied.
  */
 size_t iov_iter_copy_from_user_atomic(struct page *page,
@@ -2274,9 +2196,6 @@ again:
 		if (unlikely(status))
 			break;
 
-		if (mapping_writably_mapped(mapping))
-			flush_dcache_page(page);
-
 		pagefault_disable();
 		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
 		pagefault_enable();
@@ -2321,7 +2240,6 @@ generic_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 		size_t count, ssize_t written)
 {
 	struct file *file = iocb->ki_filp;
-	struct address_space *mapping = file->f_mapping;
 	ssize_t status;
 	struct iov_iter i;
 
@@ -2333,15 +2251,6 @@ generic_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 		*ppos = pos + status;
   	}
 	
-	/*
-	 * If we get here for O_DIRECT writes then we must have fallen through
-	 * to buffered writes (block instantiation inside i_size).  So we sync
-	 * the file data here, to try to honour O_DIRECT expectations.
-	 */
-	if (unlikely(file->f_flags & O_DIRECT) && written)
-		status = filemap_write_and_wait_range(mapping,
-					pos, pos + written - 1);
-
 	return written ? written : status;
 }
 EXPORT_SYMBOL(generic_file_buffered_write);
@@ -2440,10 +2349,7 @@ ssize_t __generic_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 		 * semantics.
 		 */
 		endbyte = pos + written_buffered - written - 1;
-		err = do_sync_mapping_range(file->f_mapping, pos, endbyte,
-					    SYNC_FILE_RANGE_WAIT_BEFORE|
-					    SYNC_FILE_RANGE_WRITE|
-					    SYNC_FILE_RANGE_WAIT_AFTER);
+		err = filemap_write_and_wait_range(file->f_mapping, pos, endbyte);
 		if (err == 0) {
 			written = written_buffered;
 			invalidate_mapping_pages(mapping,

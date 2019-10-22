@@ -18,7 +18,6 @@
 #include <linux/hrtimer.h>
 #include <linux/tick.h>
 #include <linux/sched.h>
-#include <linux/math64.h>
 
 #define BUCKETS 12
 #define RESOLUTION 1024
@@ -129,7 +128,7 @@ static inline int which_bucket(unsigned int duration)
 	 * This allows us to calculate
 	 * E(duration)|iowait
 	 */
-	if (nr_iowait_cpu(smp_processor_id()))
+	if (nr_iowait_cpu())
 		bucket = BUCKETS/2;
 
 	if (duration < 10)
@@ -161,20 +160,14 @@ static inline int performance_multiplier(void)
 	mult += 2 * get_loadavg();
 
 	/* for IO wait tasks (per cpu!) we add 5x each */
-	mult += 10 * nr_iowait_cpu(smp_processor_id());
+	mult += 10 * nr_iowait_cpu();
 
-	return mult / 300;
+	return mult;
 }
 
 static DEFINE_PER_CPU(struct menu_device, menu_devices);
 
 static void menu_update(struct cpuidle_device *dev);
-
-/* This implements DIV_ROUND_CLOSEST but avoids 64 bit division */
-static u64 div_round64(u64 dividend, u32 divisor)
-{
-	return div_u64(dividend + (divisor / 2), divisor);
-}
 
 /**
  * menu_select - selects the next idle state to enter
@@ -187,13 +180,13 @@ static int menu_select(struct cpuidle_device *dev)
 	int i;
 	int multiplier;
 
+	data->last_state_idx = 0;
+	data->exit_us = 0;
+
 	if (data->needs_update) {
 		menu_update(dev);
 		data->needs_update = 0;
 	}
-
-	data->last_state_idx = 0;
-	data->exit_us = 0;
 
 	/* Special case when user has set very strict latency requirement */
 	if (unlikely(latency_req == 0))
@@ -216,8 +209,9 @@ static int menu_select(struct cpuidle_device *dev)
 		data->correction_factor[data->bucket] = RESOLUTION * DECAY;
 
 	/* Make sure to round up for half microseconds */
-	data->predicted_us = div_round64(data->expected_us * data->correction_factor[data->bucket],
-					 RESOLUTION * DECAY);
+	data->predicted_us = DIV_ROUND_CLOSEST(
+		data->expected_us * data->correction_factor[data->bucket],
+		RESOLUTION * DECAY);
 
 	/*
 	 * We want to default to C1 (hlt), not to busy polling
@@ -294,7 +288,7 @@ static void menu_update(struct cpuidle_device *dev)
 	new_factor = data->correction_factor[data->bucket]
 			* (DECAY - 1) / DECAY;
 
-	if (data->expected_us > 0 && measured_us < MAX_INTERESTING)
+	if (data->expected_us > 0 && data->measured_us < MAX_INTERESTING)
 		new_factor += RESOLUTION * measured_us / data->expected_us;
 	else
 		/*

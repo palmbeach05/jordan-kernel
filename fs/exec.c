@@ -46,7 +46,6 @@
 #include <linux/proc_fs.h>
 #include <linux/mount.h>
 #include <linux/security.h>
-#include <linux/ima.h>
 #include <linux/syscalls.h>
 #include <linux/tsacct_kern.h>
 #include <linux/cn_proc.h>
@@ -56,7 +55,6 @@
 #include <linux/fsnotify.h>
 #include <linux/fs_struct.h>
 #include <linux/pipe_fs_i.h>
-#include <trace/fs.h>
 
 #include <asm/uaccess.h>
 #include <asm/mmu_context.h>
@@ -72,11 +70,6 @@ int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
 static DEFINE_RWLOCK(binfmt_lock);
-
-/*
- * Also used in compat.c.
- */
-DEFINE_TRACE(fs_exec);
 
 int __register_binfmt(struct linux_binfmt * fmt, int insert)
 {
@@ -249,12 +242,10 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	 * use STACK_TOP because that can depend on attributes which aren't
 	 * configured yet.
 	 */
-	BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_end = STACK_TOP_MAX;
 	vma->vm_start = vma->vm_end - PAGE_SIZE;
-	vma->vm_flags = VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+	vma->vm_flags = VM_STACK_FLAGS;
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
-	INIT_LIST_HEAD(&vma->anon_vma_chain);
 	err = insert_vm_struct(mm, vma);
 	if (err)
 		goto err;
@@ -525,8 +516,7 @@ static int shift_arg_pages(struct vm_area_struct *vma, unsigned long shift)
 	/*
 	 * cover the whole range: [new_start, old_end)
 	 */
-	if (vma_adjust(vma, new_start, old_end, vma->vm_pgoff, NULL))
-		return -ENOMEM;
+	vma_adjust(vma, new_start, old_end, vma->vm_pgoff, NULL);
 
 	/*
 	 * move the page tables downwards, on failure we rely on
@@ -557,7 +547,7 @@ static int shift_arg_pages(struct vm_area_struct *vma, unsigned long shift)
 	tlb_finish_mmu(tlb, new_end, old_end);
 
 	/*
-	 * Shrink the vma to just the new range.  Always succeeds.
+	 * shrink the vma to just the new range.
 	 */
 	vma_adjust(vma, new_start, new_end, vma->vm_pgoff, NULL);
 
@@ -581,9 +571,6 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	struct vm_area_struct *prev = NULL;
 	unsigned long vm_flags;
 	unsigned long stack_base;
-	unsigned long stack_size;
-	unsigned long stack_expand;
-	unsigned long rlim_stack;
 
 #ifdef CONFIG_STACK_GROWSUP
 	/* Limit stack size to 1GB */
@@ -626,7 +613,6 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	else if (executable_stack == EXSTACK_DISABLE_X)
 		vm_flags &= ~VM_EXEC;
 	vm_flags |= mm->def_flags;
-	vm_flags |= VM_STACK_INCOMPLETE_SETUP;
 
 	ret = mprotect_fixup(vma, &prev, vma->vm_start, vma->vm_end,
 			vm_flags);
@@ -641,26 +627,10 @@ int setup_arg_pages(struct linux_binprm *bprm,
 			goto out_unlock;
 	}
 
-	/* mprotect_fixup is overkill to remove the temporary stack flags */
-	vma->vm_flags &= ~VM_STACK_INCOMPLETE_SETUP;
-
-	stack_expand = 131072UL; /* randomly 32*4k (or 2*64k) pages */
-	stack_size = vma->vm_end - vma->vm_start;
-	/*
-	 * Align this down to a page boundary as expand_stack
-	 * will align it up.
-	 */
-	rlim_stack = rlimit(RLIMIT_STACK) & PAGE_MASK;
 #ifdef CONFIG_STACK_GROWSUP
-	if (stack_size + stack_expand > rlim_stack)
-		stack_base = vma->vm_start + rlim_stack;
-	else
-		stack_base = vma->vm_end + stack_expand;
+	stack_base = vma->vm_end + EXTRA_STACK_VM_PAGES * PAGE_SIZE;
 #else
-	if (stack_size + stack_expand > rlim_stack)
-		stack_base = vma->vm_end - rlim_stack;
-	else
-		stack_base = vma->vm_start - stack_expand;
+	stack_base = vma->vm_start - EXTRA_STACK_VM_PAGES * PAGE_SIZE;
 #endif
 	ret = expand_stack(vma, stack_base);
 	if (ret)
@@ -732,7 +702,6 @@ static int exec_mmap(struct mm_struct *mm)
 	/* Notify parent that we're no longer interested in the old VM */
 	tsk = current;
 	old_mm = current->mm;
-	sync_mm_rss(tsk, old_mm);
 	mm_release(tsk, old_mm);
 
 	if (old_mm) {
@@ -956,6 +925,15 @@ char *get_task_comm(char *buf, struct task_struct *tsk)
 void set_task_comm(struct task_struct *tsk, char *buf)
 {
 	task_lock(tsk);
+
+	/*
+	 * Threads may access current->comm without holding
+	 * the task lock, so write the string carefully.
+	 * Readers without a lock may see incomplete new
+	 * names but are safe from non-terminating string reads.
+	 */
+	memset(tsk->comm, 0, TASK_COMM_LEN);
+	wmb();
 	strlcpy(tsk->comm, buf, sizeof(tsk->comm));
 	task_unlock(tsk);
 	perf_event_comm(tsk);
@@ -963,7 +941,9 @@ void set_task_comm(struct task_struct *tsk, char *buf)
 
 int flush_old_exec(struct linux_binprm * bprm)
 {
-	int retval;
+	char * name;
+	int i, ch, retval;
+	char tcomm[sizeof(current->comm)];
 
 	/*
 	 * Make sure we have a private signal table and that
@@ -983,25 +963,6 @@ int flush_old_exec(struct linux_binprm * bprm)
 		goto out;
 
 	bprm->mm = NULL;		/* We're using it now */
-
-	current->flags &= ~PF_RANDOMIZE;
-	flush_thread();
-	current->personality &= ~bprm->per_clear;
-
-	return 0;
-
-out:
-	return retval;
-}
-EXPORT_SYMBOL(flush_old_exec);
-
-void setup_new_exec(struct linux_binprm * bprm)
-{
-	int i, ch;
-	char * name;
-	char tcomm[sizeof(current->comm)];
-
-	arch_pick_mmap_layout(current->mm);
 
 	/* This is the point of no return */
 	current->sas_ss_sp = current->sas_ss_size = 0;
@@ -1024,6 +985,9 @@ void setup_new_exec(struct linux_binprm * bprm)
 	tcomm[i] = '\0';
 	set_task_comm(current, tcomm);
 
+	current->flags &= ~PF_RANDOMIZE;
+	flush_thread();
+
 	/* Set the new mm task size. We have to do that late because it may
 	 * depend on TIF_32BIT which is only updated in flush_thread() on
 	 * some architectures like powerpc
@@ -1039,6 +1003,8 @@ void setup_new_exec(struct linux_binprm * bprm)
 		set_dumpable(current->mm, suid_dumpable);
 	}
 
+	current->personality &= ~bprm->per_clear;
+
 	/*
 	 * Flush performance counters when crossing a
 	 * security domain:
@@ -1053,8 +1019,14 @@ void setup_new_exec(struct linux_binprm * bprm)
 			
 	flush_signal_handlers(current, 0);
 	flush_old_files(current->files);
+
+	return 0;
+
+out:
+	return retval;
 }
-EXPORT_SYMBOL(setup_new_exec);
+
+EXPORT_SYMBOL(flush_old_exec);
 
 /*
  * Prepare credentials and lock ->cred_guard_mutex.
@@ -1117,13 +1089,6 @@ int check_unsafe_exec(struct linux_binprm *bprm)
 
 	bprm->unsafe = tracehook_unsafe_exec(p);
 
-	/*
-	 * This isn't strictly necessary, but it makes it harder for LSMs to
-	 * mess up.
-	 */
-	if (current->no_new_privs)
-		bprm->unsafe |= LSM_UNSAFE_NO_NEW_PRIVS;
-
 	n_fs = 1;
 	write_lock(&p->fs->lock);
 	rcu_read_lock();
@@ -1167,8 +1132,7 @@ int prepare_binprm(struct linux_binprm *bprm)
 	bprm->cred->euid = current_euid();
 	bprm->cred->egid = current_egid();
 
-	if (!(bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID) &&
-	    !current->no_new_privs) {
+	if (!(bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID)) {
 		/* Set-uid? */
 		if (mode & S_ISUID) {
 			bprm->per_clear |= PER_CLEAR_ON_SETID;
@@ -1253,9 +1217,6 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
 	struct linux_binfmt *fmt;
 
 	retval = security_bprm_check(bprm);
-	if (retval)
-		return retval;
-	retval = ima_bprm_check(bprm);
 	if (retval)
 		return retval;
 
@@ -1405,7 +1366,6 @@ int do_execve(char * filename,
 
 	current->stack_start = current->mm->start_stack;
 
-	trace_fs_exec(filename);
 	/* execve succeeded */
 	current->fs->in_exec = 0;
 	current->in_execve = 0;

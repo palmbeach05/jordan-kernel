@@ -619,13 +619,13 @@ struct sk_buff *arp_create(int type, int ptype, __be32 dest_ip,
 #endif
 #endif
 
-#if defined(CONFIG_FDDI) || defined(CONFIG_FDDI_MODULE)
+#ifdef CONFIG_FDDI
 	case ARPHRD_FDDI:
 		arp->ar_hrd = htons(ARPHRD_ETHER);
 		arp->ar_pro = htons(ETH_P_IP);
 		break;
 #endif
-#if defined(CONFIG_TR) || defined(CONFIG_TR_MODULE)
+#ifdef CONFIG_TR
 	case ARPHRD_IEEE802_TR:
 		arp->ar_hrd = htons(ARPHRD_IEEE802);
 		arp->ar_pro = htons(ETH_P_IP);
@@ -1005,7 +1005,7 @@ static int arp_req_set(struct net *net, struct arpreq *r,
 			return -EINVAL;
 	}
 	switch (dev->type) {
-#if defined(CONFIG_FDDI) || defined(CONFIG_FDDI_MODULE)
+#ifdef CONFIG_FDDI
 	case ARPHRD_FDDI:
 		/*
 		 * According to RFC 1390, FDDI devices should accept ARP
@@ -1240,7 +1240,7 @@ void __init arp_init(void)
 	arp_proc_init();
 #ifdef CONFIG_SYSCTL
 	neigh_sysctl_register(NULL, &arp_tbl.parms, NET_IPV4,
-			      NET_IPV4_NEIGH, "ipv4", NULL, NULL);
+			      NET_IPV4_NEIGH, "ipv4", NULL);
 #endif
 	register_netdevice_notifier(&arp_netdev_notifier);
 }

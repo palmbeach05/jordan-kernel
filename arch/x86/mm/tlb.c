@@ -5,10 +5,10 @@
 #include <linux/smp.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <trace/irq.h>
 
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
+#include <asm/cache.h>
 #include <asm/apic.h>
 #include <asm/uv/uv.h>
 
@@ -44,7 +44,7 @@ union smp_flush_state {
 		spinlock_t tlbstate_lock;
 		DECLARE_BITMAP(flush_cpumask, NR_CPUS);
 	};
-	char pad[CONFIG_X86_INTERNODE_CACHE_BYTES];
+	char pad[INTERNODE_CACHE_BYTES];
 } ____cacheline_internodealigned_in_smp;
 
 /* State is put into the per CPU data section, but padded
@@ -138,8 +138,6 @@ void smp_invalidate_interrupt(struct pt_regs *regs)
 	sender = ~regs->orig_ax - INVALIDATE_TLB_VECTOR_START;
 	f = &flush_state[sender];
 
-	trace_irq_entry(sender, regs, NULL);
-
 	if (!cpumask_test_cpu(cpu, to_cpumask(f->flush_cpumask)))
 		goto out;
 		/*
@@ -166,7 +164,6 @@ out:
 	cpumask_clear_cpu(cpu, to_cpumask(f->flush_cpumask));
 	smp_mb__after_clear_bit();
 	inc_irq_stat(irq_tlb_count);
-	trace_irq_exit(IRQ_HANDLED);
 }
 
 static void flush_tlb_others_ipi(const struct cpumask *cpumask,

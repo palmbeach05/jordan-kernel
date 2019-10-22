@@ -56,8 +56,6 @@
 #include <linux/kallsyms.h>
 #include <linux/swapops.h>
 #include <linux/elf.h>
-#include <trace/swap.h>
-#include <trace/fault.h>
 
 #include <asm/io.h>
 #include <asm/pgalloc.h>
@@ -67,10 +65,6 @@
 #include <asm/pgtable.h>
 
 #include "internal.h"
-
-DEFINE_TRACE(swap_in);
-DEFINE_TRACE(page_fault_get_user_entry);
-DEFINE_TRACE(page_fault_get_user_exit);
 
 #ifndef CONFIG_NEED_MULTIPLE_NODES
 /* use the per-pgdat data instead for discontigmem - mbligh */
@@ -126,80 +120,6 @@ static int __init init_zero_pfn(void)
 	return 0;
 }
 core_initcall(init_zero_pfn);
-
-
-#if defined(SPLIT_RSS_COUNTING)
-
-void __sync_task_rss_stat(struct task_struct *task, struct mm_struct *mm)
-{
-	int i;
-
-	for (i = 0; i < NR_MM_COUNTERS; i++) {
-		if (task->rss_stat.count[i]) {
-			add_mm_counter(mm, i, task->rss_stat.count[i]);
-			task->rss_stat.count[i] = 0;
-		}
-	}
-	task->rss_stat.events = 0;
-}
-
-static void add_mm_counter_fast(struct mm_struct *mm, int member, int val)
-{
-	struct task_struct *task = current;
-
-	if (likely(task->mm == mm))
-		task->rss_stat.count[member] += val;
-	else
-		add_mm_counter(mm, member, val);
-}
-#define inc_mm_counter_fast(mm, member) add_mm_counter_fast(mm, member, 1)
-#define dec_mm_counter_fast(mm, member) add_mm_counter_fast(mm, member, -1)
-
-/* sync counter once per 64 page faults */
-#define TASK_RSS_EVENTS_THRESH	(64)
-static void check_sync_rss_stat(struct task_struct *task)
-{
-	if (unlikely(task != current))
-		return;
-	if (unlikely(task->rss_stat.events++ > TASK_RSS_EVENTS_THRESH))
-		__sync_task_rss_stat(task, task->mm);
-}
-
-unsigned long get_mm_counter(struct mm_struct *mm, int member)
-{
-	long val = 0;
-
-	/*
-	 * Don't use task->mm here...for avoiding to use task_get_mm()..
-	 * The caller must guarantee task->mm is not invalid.
-	 */
-	val = atomic_long_read(&mm->rss_stat.count[member]);
-	/*
-	 * counter is updated in asynchronous manner and may go to minus.
-	 * But it's never be expected number for users.
-	 */
-	if (val < 0)
-		return 0;
-	return (unsigned long)val;
-}
-
-void sync_mm_rss(struct task_struct *task, struct mm_struct *mm)
-{
-	__sync_task_rss_stat(task, mm);
-}
-#else
-
-#define inc_mm_counter_fast(mm, member) inc_mm_counter(mm, member)
-#define dec_mm_counter_fast(mm, member) dec_mm_counter(mm, member)
-
-static void check_sync_rss_stat(struct task_struct *task)
-{
-}
-
-void sync_mm_rss(struct task_struct *task, struct mm_struct *mm)
-{
-}
-#endif
 
 /*
  * If a p?d_bad entry is found while walking page tables, report
@@ -380,7 +300,7 @@ void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		 * Hide vma from rmap and truncate_pagecache before freeing
 		 * pgtables
 		 */
-		unlink_anon_vmas(vma);
+		anon_vma_unlink(vma);
 		unlink_file_vma(vma);
 
 		if (is_vm_hugetlb_page(vma)) {
@@ -394,7 +314,7 @@ void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,
 			       && !is_vm_hugetlb_page(next)) {
 				vma = next;
 				next = vma->vm_next;
-				unlink_anon_vmas(vma);
+				anon_vma_unlink(vma);
 				unlink_file_vma(vma);
 			}
 			free_pgd_range(tlb, addr, vma->vm_end,
@@ -456,20 +376,12 @@ int __pte_alloc_kernel(pmd_t *pmd, unsigned long address)
 	return 0;
 }
 
-static inline void init_rss_vec(int *rss)
+static inline void add_mm_rss(struct mm_struct *mm, int file_rss, int anon_rss)
 {
-	memset(rss, 0, sizeof(int) * NR_MM_COUNTERS);
-}
-
-static inline void add_mm_rss_vec(struct mm_struct *mm, int *rss)
-{
-	int i;
-
-	if (current->mm == mm)
-		sync_mm_rss(current, mm);
-	for (i = 0; i < NR_MM_COUNTERS; i++)
-		if (rss[i])
-			add_mm_counter(mm, i, rss[i]);
+	if (file_rss)
+		add_mm_counter(mm, file_rss, file_rss);
+	if (anon_rss)
+		add_mm_counter(mm, anon_rss, anon_rss);
 }
 
 /*
@@ -685,9 +597,7 @@ copy_one_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 						 &src_mm->mmlist);
 				spin_unlock(&mmlist_lock);
 			}
-			if (likely(!non_swap_entry(entry)))
-				rss[MM_SWAPENTS]++;
-			else if (is_write_migration_entry(entry) &&
+			if (is_write_migration_entry(entry) &&
 					is_cow_mapping(vm_flags)) {
 				/*
 				 * COW mappings require pages in both parent
@@ -722,10 +632,7 @@ copy_one_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	if (page) {
 		get_page(page);
 		page_dup_rmap(page);
-		if (PageAnon(page))
-			rss[MM_ANONPAGES]++;
-		else
-			rss[MM_FILEPAGES]++;
+		rss[PageAnon(page)]++;
 	}
 
 out_set_pte:
@@ -741,12 +648,11 @@ static int copy_pte_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	pte_t *src_pte, *dst_pte;
 	spinlock_t *src_ptl, *dst_ptl;
 	int progress = 0;
-	int rss[NR_MM_COUNTERS];
+	int rss[2];
 	swp_entry_t entry = (swp_entry_t){0};
 
 again:
-	init_rss_vec(rss);
-
+	rss[1] = rss[0] = 0;
 	dst_pte = pte_alloc_map_lock(dst_mm, dst_pmd, addr, &dst_ptl);
 	if (!dst_pte)
 		return -ENOMEM;
@@ -782,7 +688,7 @@ again:
 	arch_leave_lazy_mmu_mode();
 	spin_unlock(src_ptl);
 	pte_unmap_nested(orig_src_pte);
-	add_mm_rss_vec(dst_mm, rss);
+	add_mm_rss(dst_mm, rss[0], rss[1]);
 	pte_unmap_unlock(orig_dst_pte, dst_ptl);
 	cond_resched();
 
@@ -910,9 +816,8 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	struct mm_struct *mm = tlb->mm;
 	pte_t *pte;
 	spinlock_t *ptl;
-	int rss[NR_MM_COUNTERS];
-
-	init_rss_vec(rss);
+	int file_rss = 0;
+	int anon_rss = 0;
 
 	pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
 	arch_enter_lazy_mmu_mode();
@@ -958,14 +863,14 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 				set_pte_at(mm, addr, pte,
 					   pgoff_to_pte(page->index));
 			if (PageAnon(page))
-				rss[MM_ANONPAGES]--;
+				anon_rss--;
 			else {
 				if (pte_dirty(ptent))
 					set_page_dirty(page);
 				if (pte_young(ptent) &&
 				    likely(!VM_SequentialReadHint(vma)))
 					mark_page_accessed(page);
-				rss[MM_FILEPAGES]--;
+				file_rss--;
 			}
 			page_remove_rmap(page);
 			if (unlikely(page_mapcount(page) < 0))
@@ -982,18 +887,13 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 		if (pte_file(ptent)) {
 			if (unlikely(!(vma->vm_flags & VM_NONLINEAR)))
 				print_bad_pte(vma, addr, ptent, NULL);
-		} else {
-			swp_entry_t entry = pte_to_swp_entry(ptent);
-
-			if (!non_swap_entry(entry))
-				rss[MM_SWAPENTS]--;
-			if (unlikely(!free_swap_and_cache(entry)))
-				print_bad_pte(vma, addr, ptent, NULL);
-		}
+		} else if
+		  (unlikely(!free_swap_and_cache(pte_to_swp_entry(ptent))))
+			print_bad_pte(vma, addr, ptent, NULL);
 		pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
 	} while (pte++, addr += PAGE_SIZE, (addr != end && *zap_work > 0));
 
-	add_mm_rss_vec(mm, rss);
+	add_mm_rss(mm, file_rss, anon_rss);
 	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(pte - 1, ptl);
 
@@ -1343,7 +1243,6 @@ no_page_table:
 		return ERR_PTR(-EFAULT);
 	return page;
 }
-EXPORT_SYMBOL_GPL(follow_page);
 
 int __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 		     unsigned long start, int nr_pages, unsigned int gup_flags,
@@ -1436,15 +1335,11 @@ int __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 
 			cond_resched();
 			while (!(page = follow_page(vma, start, foll_flags))) {
-				int ret, write_access;
+				int ret;
 
-				write_access = foll_flags & FOLL_WRITE;
-				trace_page_fault_get_user_entry(mm,
-					vma, start, write_access);
 				ret = handle_mm_fault(mm, vma, start,
-					write_access ?
+					(foll_flags & FOLL_WRITE) ?
 					FAULT_FLAG_WRITE : 0);
-				trace_page_fault_get_user_exit(ret);
 
 				if (ret & VM_FAULT_ERROR) {
 					if (ret & VM_FAULT_OOM)
@@ -1632,7 +1527,7 @@ static int insert_page(struct vm_area_struct *vma, unsigned long addr,
 
 	/* Ok, finally just insert the thing.. */
 	get_page(page);
-	inc_mm_counter_fast(mm, MM_FILEPAGES);
+	inc_mm_counter(mm, file_rss);
 	page_add_file_rmap(page);
 	set_pte_at(mm, addr, pte, mk_pte(page, prot));
 
@@ -2149,13 +2044,6 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
 			page_cache_release(old_page);
 		}
 		reuse = reuse_swap_page(old_page);
-		if (reuse)
-			/*
-			 * The page is all ours.  Move it to our anon_vma so
-			 * the rmap code will not search our parent or siblings.
-			 * Protected against the rmap code by the page lock.
-			 */
-			page_move_anon_rmap(old_page, vma, address);
 		unlock_page(old_page);
 	} else if (unlikely((vma->vm_flags & (VM_WRITE|VM_SHARED)) ==
 					(VM_WRITE|VM_SHARED))) {
@@ -2275,11 +2163,11 @@ gotten:
 	if (likely(pte_same(*page_table, orig_pte))) {
 		if (old_page) {
 			if (!PageAnon(old_page)) {
-				dec_mm_counter_fast(mm, MM_FILEPAGES);
-				inc_mm_counter_fast(mm, MM_ANONPAGES);
+				dec_mm_counter(mm, file_rss);
+				inc_mm_counter(mm, anon_rss);
 			}
 		} else
-			inc_mm_counter_fast(mm, MM_ANONPAGES);
+			inc_mm_counter(mm, anon_rss);
 		flush_cache_page(vma, address, pte_pfn(orig_pte));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
@@ -2624,7 +2512,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		unsigned int flags, pte_t orig_pte)
 {
 	spinlock_t *ptl;
-	struct page *page, *swapcache = NULL;
+	struct page *page;
 	swp_entry_t entry;
 	pte_t pte;
 	struct mem_cgroup *ptr = NULL;
@@ -2666,8 +2554,11 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		/* Had to read the page from swap area: Major fault */
 		ret = VM_FAULT_MAJOR;
 		count_vm_event(PGMAJFAULT);
-		trace_swap_in(page, entry);
 	} else if (PageHWPoison(page)) {
+		/*
+		 * hwpoisoned dirty swapcache pages are kept for killing
+		 * owner processes (which may be unknown at hwpoison time)
+		 */
 		ret = VM_FAULT_HWPOISON;
 		delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 		goto out_release;
@@ -2676,25 +2567,10 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	lock_page(page);
 	delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 
-	/*
-	 * Make sure try_to_free_swap or reuse_swap_page or swapoff did not
-	 * release the swapcache from under us.  The page pin, and pte_same
-	 * test below, are not enough to exclude that.  Even if it is still
-	 * swapcache, we need to check that the page's swap has not changed.
-	 */
-	if (unlikely(!PageSwapCache(page) || page_private(page) != entry.val))
-		goto out_page;
-
-	if (ksm_might_need_to_copy(page, vma, address)) {
-		swapcache = page;
-		page = ksm_does_need_to_copy(page, vma, address);
-
-		if (unlikely(!page)) {
-			ret = VM_FAULT_OOM;
-			page = swapcache;
-			swapcache = NULL;
-			goto out_page;
-		}
+	page = ksm_might_need_to_copy(page, vma, address);
+	if (!page) {
+		ret = VM_FAULT_OOM;
+		goto out;
 	}
 
 	if (mem_cgroup_try_charge_swapin(mm, page, GFP_KERNEL, &ptr)) {
@@ -2728,8 +2604,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * discarded at swap_free().
 	 */
 
-	inc_mm_counter_fast(mm, MM_ANONPAGES);
-	dec_mm_counter_fast(mm, MM_SWAPENTS);
+	inc_mm_counter(mm, anon_rss);
 	pte = mk_pte(page, vma->vm_page_prot);
 	if ((flags & FAULT_FLAG_WRITE) && reuse_swap_page(page)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);
@@ -2745,18 +2620,6 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (vm_swap_full() || (vma->vm_flags & VM_LOCKED) || PageMlocked(page))
 		try_to_free_swap(page);
 	unlock_page(page);
-	if (swapcache) {
-		/*
-		 * Hold the lock to avoid the swap entry to be reused
-		 * until we take the PT lock for the pte_same() check
-		 * (to avoid false positives from pte_same). For
-		 * further safety release the lock after the swap_free
-		 * so that the swap count won't change under a
-		 * parallel locked swapcache.
-		 */
-		unlock_page(swapcache);
-		page_cache_release(swapcache);
-	}
 
 	if (flags & FAULT_FLAG_WRITE) {
 		ret |= do_wp_page(mm, vma, address, page_table, pmd, ptl, pte);
@@ -2778,31 +2641,7 @@ out_page:
 	unlock_page(page);
 out_release:
 	page_cache_release(page);
-	if (swapcache) {
-		unlock_page(swapcache);
-		page_cache_release(swapcache);
-	}
 	return ret;
-}
-
-/*
- * This is like a special single-page "expand_downwards()",
- * except we must first make sure that 'address-PAGE_SIZE'
- * doesn't hit another vma.
- *
- * The "find_vma()" will do the right thing even if we wrap
- */
-static inline int check_stack_guard_page(struct vm_area_struct *vma, unsigned long address)
-{
-	address &= PAGE_MASK;
-	if ((vma->vm_flags & VM_GROWSDOWN) && address == vma->vm_start) {
-		address -= PAGE_SIZE;
-		if (find_vma(vma->vm_mm, address) != vma)
-			return -ENOMEM;
-
-		expand_stack(vma, address);
-	}
-	return 0;
 }
 
 /*
@@ -2818,23 +2657,19 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	spinlock_t *ptl;
 	pte_t entry;
 
-	pte_unmap(page_table);
-
-	/* Check if we need to add a guard page to the stack */
-	if (check_stack_guard_page(vma, address) < 0)
-		return VM_FAULT_SIGBUS;
-
-	/* Use the zero-page for reads */
 	if (!(flags & FAULT_FLAG_WRITE)) {
 		entry = pte_mkspecial(pfn_pte(my_zero_pfn(address),
 						vma->vm_page_prot));
-		page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
+		ptl = pte_lockptr(mm, pmd);
+		spin_lock(ptl);
 		if (!pte_none(*page_table))
 			goto unlock;
 		goto setpte;
 	}
 
 	/* Allocate our own private page. */
+	pte_unmap(page_table);
+
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 	page = alloc_zeroed_user_highpage_movable(vma, address);
@@ -2853,7 +2688,7 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (!pte_none(*page_table))
 		goto release;
 
-	inc_mm_counter_fast(mm, MM_ANONPAGES);
+	inc_mm_counter(mm, anon_rss);
 	page_add_new_anon_rmap(page, vma, address);
 setpte:
 	set_pte_at(mm, address, page_table, entry);
@@ -3007,10 +2842,10 @@ static int __do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		if (flags & FAULT_FLAG_WRITE)
 			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
 		if (anon) {
-			inc_mm_counter_fast(mm, MM_ANONPAGES);
+			inc_mm_counter(mm, anon_rss);
 			page_add_new_anon_rmap(page, vma, address);
 		} else {
-			inc_mm_counter_fast(mm, MM_FILEPAGES);
+			inc_mm_counter(mm, file_rss);
 			page_add_file_rmap(page);
 			if (flags & FAULT_FLAG_WRITE) {
 				dirty_page = page;
@@ -3187,9 +3022,6 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	__set_current_state(TASK_RUNNING);
 
 	count_vm_event(PGFAULT);
-
-	/* do counter updates before entering really critical section. */
-	check_sync_rss_stat(current);
 
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return hugetlb_fault(mm, vma, address, flags);

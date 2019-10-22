@@ -30,7 +30,6 @@ enum {
 #define OMAP_TAG_CLOCK		0x4f01
 #define OMAP_TAG_LCD		0x4f05
 #define OMAP_TAG_GPIO_SWITCH	0x4f06
-#define OMAP_TAG_UART		0x4f07
 #define OMAP_TAG_FBMEM		0x4f08
 #define OMAP_TAG_STI_CONSOLE	0x4f09
 #define OMAP_TAG_CAMERA_SENSOR	0x4f0a
@@ -60,7 +59,6 @@ struct omap_camera_sensor_config {
 	int (*power_off)(void * data);
 };
 
-#ifndef CONFIG_MACH_MAPPHONE
 struct omap_usb_config {
 	/* Configure drivers according to the connectors on your board:
 	 *  - "A" connector (rectagular)
@@ -87,10 +85,7 @@ struct omap_usb_config {
 	 *  6 == 6 wire unidirectional (or TLL)
 	 */
 	u8		pins[3];
-	int (*usbhost_standby_status)(void);
-	u8		usb_remote_wake_gpio;
 };
-#endif
 
 struct omap_lcd_config {
 	char panel_name[16];
@@ -148,16 +143,6 @@ struct omap_board_config_kernel {
 	u16 tag;
 	const void *data;
 };
-
-struct omap_vout_config {
-	u16 max_width;
-	u16 max_height;
-	u32 max_buffer_size;
-	u8  num_buffers;
-	u8  num_devices;
-	int device_ids[2]; /* -1 for any videoX */
-};
-
 
 extern const void *__omap_get_config(u16 tag, size_t len, int nr);
 

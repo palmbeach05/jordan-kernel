@@ -113,15 +113,6 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	int			mask;
 	u32 __iomem		*hostpc_reg = NULL;
 
-	port = HCS_N_PORTS(ehci->hcs_params);
-	while (port--) {
-		u32 __iomem	*reg = &ehci->regs->port_status[port];
-		u32		t1 = ehci_readl(ehci, reg);
-		if (t1 & PORT_RESUME) {
-			return -EBUSY;
-		}
-	}
-
 	ehci_dbg(ehci, "suspend root hub\n");
 
 	if (time_before (jiffies, ehci->next_statechange))
@@ -129,29 +120,8 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	del_timer_sync(&ehci->watchdog);
 	del_timer_sync(&ehci->iaa_watchdog);
 
+	port = HCS_N_PORTS (ehci->hcs_params);
 	spin_lock_irq (&ehci->lock);
-
-	/* Once the controller is stopped, port resumes that are already
-	 * in progress won't complete.  Hence if remote wakeup is enabled
-	 * for the root hub and any ports are in the middle of a resume or
-	 * remote wakeup, we must fail the suspend.
-	 */
-#ifndef CONFIG_MACH_MAPPHONE
-	if (hcd->self.root_hub->do_remote_wakeup) {
-#endif
-		port = HCS_N_PORTS(ehci->hcs_params);
-		while (port--) {
-			if (ehci->reset_done[port] != 0) {
-				spin_unlock_irq(&ehci->lock);
-				ehci_dbg(ehci, "suspend failed because "
-						"port %d is resuming\n",
-						port + 1);
-				return -EBUSY;
-			}
-		}
-#ifndef CONFIG_MACH_MAPPHONE
-	}
-#endif
 
 	/* stop schedules, clean any completed work */
 	if (HC_IS_RUNNING(hcd->state)) {
@@ -168,7 +138,6 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	 */
 	ehci->bus_suspended = 0;
 	ehci->owned_ports = 0;
-	port = HCS_N_PORTS(ehci->hcs_params);
 	while (port--) {
 		u32 __iomem	*reg = &ehci->regs->port_status [port];
 		u32		t1 = ehci_readl(ehci, reg) & ~PORT_RWC_BITS;
@@ -267,7 +236,7 @@ static int ehci_bus_resume (struct usb_hcd *hcd)
 	}
 
 	if (unlikely(ehci->debug)) {
-		if (ehci->debug && !dbgp_reset_prep())
+		if (!dbgp_reset_prep())
 			ehci->debug = NULL;
 		else
 			dbgp_external_startup();
@@ -296,13 +265,11 @@ static int ehci_bus_resume (struct usb_hcd *hcd)
 	/* restore CMD_RUN, framelist size, and irq threshold */
 	ehci_writel(ehci, ehci->command, &ehci->regs->command);
 
-#ifndef CONFIG_ARCH_OMAP
 	/* Some controller/firmware combinations need a delay during which
 	 * they set up the port statuses.  See Bugzilla #8190. */
 	spin_unlock_irq(&ehci->lock);
 	msleep(8);
 	spin_lock_irq(&ehci->lock);
-#endif
 
 	/* manually resume the ports we suspended during bus_suspend() */
 	i = HCS_N_PORTS (ehci->hcs_params);
@@ -500,25 +467,10 @@ static int check_reset_complete (
 		ehci_dbg (ehci, "port %d full speed --> companion\n",
 			index + 1);
 
-#ifdef CONFIG_MACH_MAPPHONE
-		/* when detect a full speed device, it's compliant with EHCI
-		 * specification to give up ownership of that port. But for our
-		 * case, there is really no other device connected to port 3,
-		 * and for some reason when a panic in the device happens,
-		 * the peripheral shows up as full speed device, hence
-		 * enumeration with EHCI fails. To workaround this issue, BP
-		 * reset USB controller and restart enumeration process if
-		 * enumeration doesn't seem to happen, and in EHCI driver, we
-		 * don't give up ownership of the port, simply waiting for the
-		 * of the port, simply waiting for the peripheral to connect
-		 * again. */
-		if ((index != 2) || is_cdma_phone()) {
-			/* what happens if HCS_N_CC(params) == 0 ?*/
-			port_status |= PORT_OWNER;
-			port_status &= ~PORT_RWC_BITS;
-			ehci_writel(ehci, port_status, status_reg);
-		}
-#endif
+		// what happens if HCS_N_CC(params) == 0 ?
+		port_status |= PORT_OWNER;
+		port_status &= ~PORT_RWC_BITS;
+		ehci_writel(ehci, port_status, status_reg);
 
 		/* ensure 440EPX ohci controller state is operational */
 		if (ehci->has_amcc_usb23)
@@ -654,9 +606,6 @@ static int ehci_hub_control (
 	unsigned long	flags;
 	int		retval = 0;
 	unsigned	selector;
-#ifdef CONFIG_ARCH_OMAP
-	u32		runstop;
-#endif
 
 	/*
 	 * FIXME:  support SetPortFeatures USB_PORT_FEAT_INDICATOR.
@@ -801,20 +750,6 @@ static int ehci_hub_control (
 				set_bit(wIndex, &ehci->port_c_suspend);
 				ehci->reset_done[wIndex] = 0;
 
-#ifdef CONFIG_ARCH_OMAP
-				/* Workaround for OMAP errata:
-				 * The errata effects suspend-resume and
-				 * remote-wakeup
-				 * We need to halt the controller before
-				 * clearing the resume bit in PORTSC */
-				runstop = ehci_readl(ehci,
-						&ehci->regs->command);
-				ehci_writel(ehci, (runstop & ~CMD_RUN),
-						&ehci->regs->command);
-				(void) ehci_readl(ehci, &ehci->regs->command);
-				handshake(ehci, &ehci->regs->status,
-						STS_HALT, STS_HALT, 2000);
-#endif
 				/* stop resume signaling */
 				temp = ehci_readl(ehci, status_reg);
 				ehci_writel(ehci,
@@ -822,11 +757,6 @@ static int ehci_hub_control (
 					status_reg);
 				retval = handshake(ehci, status_reg,
 					   PORT_RESUME, 0, 2000 /* 2msec */);
-#ifdef CONFIG_ARCH_OMAP
-				ehci_writel(ehci,
-					(runstop), &ehci->regs->command);
-				(void) ehci_readl(ehci, &ehci->regs->command);
-#endif
 				if (retval != 0) {
 					ehci_err(ehci,
 						"port %d resume error %d\n",

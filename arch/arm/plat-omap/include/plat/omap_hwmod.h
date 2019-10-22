@@ -33,42 +33,25 @@
 #define __ARCH_ARM_PLAT_OMAP_INCLUDE_MACH_OMAP_HWMOD_H
 
 #include <linux/kernel.h>
-#include <linux/list.h>
 #include <linux/ioport.h>
+
 #include <plat/cpu.h>
 
 struct omap_device;
 
-extern struct omap_hwmod_sysc_fields omap_hwmod_sysc_type1;
-extern struct omap_hwmod_sysc_fields omap_hwmod_sysc_type2;
-
-/*
- * OCP SYSCONFIG bit shifts/masks TYPE1. These are for IPs compliant
- * with the original PRCM protocol defined for OMAP2420
- */
-#define SYSC_TYPE1_MIDLEMODE_SHIFT	12
-#define SYSC_TYPE1_MIDLEMODE_MASK	(0x3 << SYSC_MIDLEMODE_SHIFT)
-#define SYSC_TYPE1_CLOCKACTIVITY_SHIFT	8
-#define SYSC_TYPE1_CLOCKACTIVITY_MASK	(0x3 << SYSC_CLOCKACTIVITY_SHIFT)
-#define SYSC_TYPE1_SIDLEMODE_SHIFT	3
-#define SYSC_TYPE1_SIDLEMODE_MASK	(0x3 << SYSC_SIDLEMODE_SHIFT)
-#define SYSC_TYPE1_ENAWAKEUP_SHIFT	2
-#define SYSC_TYPE1_ENAWAKEUP_MASK	(1 << SYSC_ENAWAKEUP_SHIFT)
-#define SYSC_TYPE1_SOFTRESET_SHIFT	1
-#define SYSC_TYPE1_SOFTRESET_MASK	(1 << SYSC_SOFTRESET_SHIFT)
-#define SYSC_TYPE1_AUTOIDLE_SHIFT	0
-#define SYSC_TYPE1_AUTOIDLE_MASK	(1 << SYSC_AUTOIDLE_SHIFT)
-
-/*
- * OCP SYSCONFIG bit shifts/masks TYPE2. These are for IPs compliant
- * with the new PRCM protocol defined for new OMAP4 IPs.
- */
-#define SYSC_TYPE2_SOFTRESET_SHIFT	0
-#define SYSC_TYPE2_SOFTRESET_MASK	(1 << SYSC_TYPE2_SOFTRESET_SHIFT)
-#define SYSC_TYPE2_SIDLEMODE_SHIFT	2
-#define SYSC_TYPE2_SIDLEMODE_MASK	(0x3 << SYSC_TYPE2_SIDLEMODE_SHIFT)
-#define SYSC_TYPE2_MIDLEMODE_SHIFT	4
-#define SYSC_TYPE2_MIDLEMODE_MASK	(0x3 << SYSC_TYPE2_MIDLEMODE_SHIFT)
+/* OCP SYSCONFIG bit shifts/masks */
+#define SYSC_MIDLEMODE_SHIFT		12
+#define SYSC_MIDLEMODE_MASK		(0x3 << SYSC_MIDLEMODE_SHIFT)
+#define SYSC_CLOCKACTIVITY_SHIFT	8
+#define SYSC_CLOCKACTIVITY_MASK		(0x3 << SYSC_CLOCKACTIVITY_SHIFT)
+#define SYSC_SIDLEMODE_SHIFT		3
+#define SYSC_SIDLEMODE_MASK		(0x3 << SYSC_SIDLEMODE_SHIFT)
+#define SYSC_ENAWAKEUP_SHIFT		2
+#define SYSC_ENAWAKEUP_MASK		(1 << SYSC_ENAWAKEUP_SHIFT)
+#define SYSC_SOFTRESET_SHIFT		1
+#define SYSC_SOFTRESET_MASK		(1 << SYSC_SOFTRESET_SHIFT)
+#define SYSC_AUTOIDLE_SHIFT		0
+#define SYSC_AUTOIDLE_MASK		(1 << SYSC_AUTOIDLE_SHIFT)
 
 /* OCP SYSSTATUS bit shifts/masks */
 #define SYSS_RESETDONE_SHIFT		0
@@ -78,6 +61,7 @@ extern struct omap_hwmod_sysc_fields omap_hwmod_sysc_type2;
 #define HWMOD_IDLEMODE_FORCE		(1 << 0)
 #define HWMOD_IDLEMODE_NO		(1 << 1)
 #define HWMOD_IDLEMODE_SMART		(1 << 2)
+
 
 /**
  * struct omap_hwmod_irq_info - MPU IRQs used by the hwmod
@@ -96,7 +80,7 @@ struct omap_hwmod_irq_info {
 /**
  * struct omap_hwmod_dma_info - DMA channels used by the hwmod
  * @name: name of the DMA channel (module local name)
- * @dma_req: DMA request ID
+ * @dma_ch: DMA channel ID
  *
  * @name should be something short, e.g., "tx" or "rx".  It is for use
  * by platform_get_resource_byname().  It is defined locally to the
@@ -104,7 +88,7 @@ struct omap_hwmod_irq_info {
  */
 struct omap_hwmod_dma_info {
 	const char	*name;
-	u16		dma_req;
+	u16		dma_ch;
 };
 
 /**
@@ -243,31 +227,12 @@ struct omap_hwmod_ocp_if {
 #define SYSC_HAS_SIDLEMODE	(1 << 5)
 #define SYSC_HAS_MIDLEMODE	(1 << 6)
 #define SYSS_MISSING		(1 << 7)
-#define SYSC_NO_CACHE		(1 << 8)  /* XXX SW flag, belongs elsewhere */
 
 /* omap_hwmod_sysconfig.clockact flags */
 #define CLOCKACT_TEST_BOTH	0x0
 #define CLOCKACT_TEST_MAIN	0x1
 #define CLOCKACT_TEST_ICLK	0x2
 #define CLOCKACT_TEST_NONE	0x3
-
-/**
- * struct omap_hwmod_sysc_fields - hwmod OCP_SYSCONFIG register field offsets.
- * @midle_shift: Offset of the midle bit
- * @clkact_shift: Offset of the clockactivity bit
- * @sidle_shift: Offset of the sidle bit
- * @enwkup_shift: Offset of the enawakeup bit
- * @srst_shift: Offset of the softreset bit
- * @autoidle_shift: Offset of the autoidle bit.
- */
-struct omap_hwmod_sysc_fields {
-	u8 midle_shift;
-	u8 clkact_shift;
-	u8 sidle_shift;
-	u8 enwkup_shift;
-	u8 srst_shift;
-	u8 autoidle_shift;
-};
 
 /**
  * struct omap_hwmod_sysconfig - hwmod OCP_SYSCONFIG/OCP_SYSSTATUS data
@@ -286,14 +251,6 @@ struct omap_hwmod_sysc_fields {
  * been associated with the clocks marked in @clockact.  This field is
  * only used if HWMOD_SET_DEFAULT_CLOCKACT is set (see below)
  *
- *
- * @sysc_fields: structure containing the offset positions of various bits in
- * SYSCONFIG register. This can be populated using omap_hwmod_sysc_type1 or
- * omap_hwmod_sysc_type2 defined in omap_hwmod_common_data.c depending on
- * whether the device ip is compliant with the original PRCM protocol
- * defined for OMAP2420 or the new  PRCM protocol for new OMAP4 IPs.
- * If the device follows a differnt scheme for the sysconfig register ,
- * then this field has to be populated with the correct offset structure.
  */
 struct omap_hwmod_sysconfig {
 	u16 rev_offs;
@@ -302,7 +259,6 @@ struct omap_hwmod_sysconfig {
 	u8 idlemodes;
 	u8 sysc_flags;
 	u8 clockact;
-	struct omap_hwmod_sysc_fields *sysc_fields;
 };
 
 /**
@@ -399,7 +355,7 @@ struct omap_hwmod_omap4_prcm {
  * @name: name of the hwmod
  * @od: struct omap_device currently associated with this hwmod (internal use)
  * @mpu_irqs: ptr to an array of MPU IRQs (see also mpu_irqs_cnt)
- * @sdma_reqs: ptr to an array of System DMA request IDs (see sdma_reqs_cnt)
+ * @sdma_chs: ptr to an array of SDMA channel IDs (see also sdma_chs_cnt)
  * @prcm: PRCM data pertaining to this hwmod
  * @clkdev_dev_id: main clock: clkdev dev_id string
  * @clkdev_con_id: main clock: clkdev con_id string
@@ -415,7 +371,7 @@ struct omap_hwmod_omap4_prcm {
  * @msuspendmux_reg_id: CONTROL_MSUSPENDMUX register ID (1-6)
  * @msuspendmux_shift: CONTROL_MSUSPENDMUX register bit shift
  * @mpu_irqs_cnt: number of @mpu_irqs
- * @sdma_reqs_cnt: number of @sdma_reqs
+ * @sdma_chs_cnt: number of @sdma_chs
  * @opt_clks_cnt: number of @opt_clks
  * @master_cnt: number of @master entries
  * @slaves_cnt: number of @slave entries
@@ -438,7 +394,7 @@ struct omap_hwmod {
 	const char			*name;
 	struct omap_device		*od;
 	struct omap_hwmod_irq_info	*mpu_irqs;
-	struct omap_hwmod_dma_info	*sdma_reqs;
+	struct omap_hwmod_dma_info	*sdma_chs;
 	union {
 		struct omap_hwmod_omap2_prcm omap2;
 		struct omap_hwmod_omap4_prcm omap4;
@@ -460,7 +416,7 @@ struct omap_hwmod {
 	u8				msuspendmux_shift;
 	u8				response_lat;
 	u8				mpu_irqs_cnt;
-	u8				sdma_reqs_cnt;
+	u8				sdma_chs_cnt;
 	u8				opt_clks_cnt;
 	u8				masters_cnt;
 	u8				slaves_cnt;
@@ -483,8 +439,6 @@ int omap_hwmod_shutdown(struct omap_hwmod *oh);
 
 int omap_hwmod_enable_clocks(struct omap_hwmod *oh);
 int omap_hwmod_disable_clocks(struct omap_hwmod *oh);
-
-int omap_hwmod_set_slave_idlemode(struct omap_hwmod *oh, u8 idlemode);
 
 int omap_hwmod_reset(struct omap_hwmod *oh);
 void omap_hwmod_ocp_barrier(struct omap_hwmod *oh);

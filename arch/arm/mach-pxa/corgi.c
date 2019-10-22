@@ -671,6 +671,10 @@ static void __init corgi_init(void)
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(corgi_pin_config));
 
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
 	corgi_init_spi();
 
  	pxa_set_udc_info(&udc_info);
@@ -694,6 +698,7 @@ static void __init fixup_corgi(struct machine_desc *desc,
 	sharpsl_save_param();
 	mi->nr_banks=1;
 	mi->bank[0].start = 0xa0000000;
+	mi->bank[0].node = 0;
 	if (machine_is_corgi())
 		mi->bank[0].size = (32*1024*1024);
 	else

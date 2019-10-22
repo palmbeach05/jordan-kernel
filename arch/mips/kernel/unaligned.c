@@ -78,10 +78,10 @@
 #include <linux/smp.h>
 #include <linux/sched.h>
 #include <linux/debugfs.h>
-#include <trace/trap.h>
 #include <asm/asm.h>
 #include <asm/branch.h>
 #include <asm/byteorder.h>
+#include <asm/cop2.h>
 #include <asm/inst.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -452,17 +452,27 @@ static void emulate_load_store_insn(struct pt_regs *regs,
 		 */
 		goto sigbus;
 
+	/*
+	 * COP2 is available to implementor for application specific use.
+	 * It's up to applications to register a notifier chain and do
+	 * whatever they have to do, including possible sending of signals.
+	 */
 	case lwc2_op:
+		cu2_notifier_call_chain(CU2_LWC2_OP, regs);
+		break;
+
 	case ldc2_op:
+		cu2_notifier_call_chain(CU2_LDC2_OP, regs);
+		break;
+
 	case swc2_op:
+		cu2_notifier_call_chain(CU2_SWC2_OP, regs);
+		break;
+
 	case sdc2_op:
-		/*
-		 * These are the coprocessor 2 load/stores.  The current
-		 * implementations don't use cp2 and cp2 should always be
-		 * disabled in c0_status.  So send SIGILL.
-                 * (No longer true: The Sony Praystation uses cp2 for
-                 * 3D matrix operations.  Dunno if that thingy has a MMU ...)
-		 */
+		cu2_notifier_call_chain(CU2_SDC2_OP, regs);
+		break;
+
 	default:
 		/*
 		 * Pheeee...  We encountered an yet unknown instruction or
@@ -503,8 +513,6 @@ asmlinkage void do_ade(struct pt_regs *regs)
 	unsigned int __user *pc;
 	mm_segment_t seg;
 
-	trace_trap_entry(regs, CAUSE_EXCCODE(regs->cp0_cause));
-
 	/*
 	 * Did we catch a fault trying to load an instruction?
 	 * Or are we running in MIPS16 mode?
@@ -530,8 +538,6 @@ asmlinkage void do_ade(struct pt_regs *regs)
 	emulate_load_store_insn(regs, (void __user *)regs->cp0_badvaddr, pc);
 	set_fs(seg);
 
-	trace_trap_exit();
-
 	return;
 
 sigbus:
@@ -541,8 +547,6 @@ sigbus:
 	/*
 	 * XXX On return from the signal handler we should advance the epc
 	 */
-
-	trace_trap_exit();
 }
 
 #ifdef CONFIG_DEBUG_FS

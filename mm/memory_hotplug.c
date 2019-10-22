@@ -27,6 +27,7 @@
 #include <linux/page-isolation.h>
 #include <linux/pfn.h>
 #include <linux/suspend.h>
+#include <linux/mm_inline.h>
 
 #include <asm/tlbflush.h>
 
@@ -71,7 +72,9 @@ static void get_page_bootmem(unsigned long info,  struct page *page, int type)
 	atomic_inc(&page->_count);
 }
 
-void put_page_bootmem(struct page *page)
+/* reference to __meminit __free_pages_bootmem is valid
+ * so use __ref to tell modpost not to generate a warning */
+void __ref put_page_bootmem(struct page *page)
 {
 	int type;
 
@@ -478,29 +481,6 @@ static void rollback_node_hotadd(int nid, pg_data_t *pgdat)
 }
 
 
-/*
- * called by cpu_up() to online a node without onlined memory.
- */
-int mem_online_node(int nid)
-{
-	pg_data_t	*pgdat;
-	int	ret;
-
-	lock_system_sleep();
-	pgdat = hotadd_new_pgdat(nid, 0);
-	if (pgdat) {
-		ret = -ENOMEM;
-		goto out;
-	}
-	node_set_online(nid);
-	ret = register_one_node(nid);
-	BUG_ON(ret);
-
-out:
-	unlock_system_sleep();
-	return ret;
-}
-
 /* we are OK calling __meminit stuff here - we have CONFIG_MEMORY_HOTPLUG */
 int __ref add_memory(int nid, u64 start, u64 size)
 {
@@ -695,6 +675,9 @@ do_migrate_range(unsigned long start_pfn, unsigned long end_pfn)
 		if (!ret) { /* Success */
 			list_add_tail(&page->lru, &source);
 			move_pages--;
+			inc_zone_page_state(page, NR_ISOLATED_ANON +
+					    page_is_file_cache(page));
+
 		} else {
 			/* Becasue we don't have big zone->lock. we should
 			   check this again here. */
@@ -770,7 +753,7 @@ check_pages_isolated(unsigned long start_pfn, unsigned long end_pfn)
 	return offlined;
 }
 
-int offline_pages(unsigned long start_pfn,
+static int offline_pages(unsigned long start_pfn,
 		  unsigned long end_pfn, unsigned long timeout)
 {
 	unsigned long pfn, nr_pages, expire;

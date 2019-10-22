@@ -101,7 +101,7 @@ static int dasd_ioctl_quiesce(struct dasd_block *block)
 	pr_info("%s: The DASD has been put in the quiesce "
 		"state\n", dev_name(&base->cdev->dev));
 	spin_lock_irqsave(get_ccwdev_lock(base->cdev), flags);
-	base->stopped |= DASD_STOPPED_QUIESCE;
+	dasd_device_set_stop_bits(base, DASD_STOPPED_QUIESCE);
 	spin_unlock_irqrestore(get_ccwdev_lock(base->cdev), flags);
 	return 0;
 }
@@ -122,7 +122,7 @@ static int dasd_ioctl_resume(struct dasd_block *block)
 	pr_info("%s: I/O operations have been resumed "
 		"on the DASD\n", dev_name(&base->cdev->dev));
 	spin_lock_irqsave(get_ccwdev_lock(base->cdev), flags);
-	base->stopped &= ~DASD_STOPPED_QUIESCE;
+	dasd_device_remove_stop_bits(base, DASD_STOPPED_QUIESCE);
 	spin_unlock_irqrestore(get_ccwdev_lock(base->cdev), flags);
 
 	dasd_schedule_block_bh(block);
@@ -260,7 +260,7 @@ static int dasd_ioctl_information(struct dasd_block *block,
 	struct ccw_dev_id dev_id;
 
 	base = block->base;
-	if (!base->discipline || !base->discipline->fill_info)
+	if (!base->discipline->fill_info)
 		return -EINVAL;
 
 	dasd_info = kzalloc(sizeof(struct dasd_information2_t), GFP_KERNEL);
@@ -303,7 +303,10 @@ static int dasd_ioctl_information(struct dasd_block *block,
 	dasd_info->features |=
 		((base->features & DASD_FEATURE_READONLY) != 0);
 
-	memcpy(dasd_info->type, base->discipline->name, 4);
+	if (base->discipline)
+		memcpy(dasd_info->type, base->discipline->name, 4);
+	else
+		memcpy(dasd_info->type, "none", 4);
 
 	if (block->request_queue->request_fn) {
 		struct list_head *l;

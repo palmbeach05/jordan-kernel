@@ -24,8 +24,6 @@
 #include <linux/interrupt.h>
 #include <linux/smp.h>
 #include <linux/fs.h>
-#include <linux/proc_fs.h>
-#include <linux/memblock.h>
 
 #include <asm/unified.h>
 #include <asm/cpu.h>
@@ -39,19 +37,11 @@
 #include <asm/cachetype.h>
 #include <asm/tlbflush.h>
 
-#ifdef CONFIG_ARM_OF
-#include <asm/prom.h>
-#include <plat/board-mapphone.h>
-#endif
-
 #include <asm/mach/arch.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/time.h>
 #include <asm/traps.h>
 #include <asm/unwind.h>
-#ifdef CONFIG_BOOTINFO
-#include <asm/bootinfo.h>
-#endif
 
 #include "compat.h"
 #include "atags.h"
@@ -112,7 +102,6 @@ struct cpu_cache_fns cpu_cache;
 #endif
 #ifdef CONFIG_OUTER_CACHE
 struct outer_cache_fns outer_cache;
-EXPORT_SYMBOL(outer_cache);
 #endif
 
 struct stack {
@@ -128,7 +117,6 @@ EXPORT_SYMBOL(elf_platform);
 
 static const char *cpu_name;
 static const char *machine_name;
-static char *cpu_tier;
 static char __initdata command_line[COMMAND_LINE_SIZE];
 
 static char default_command_line[COMMAND_LINE_SIZE] __initdata = CONFIG_CMDLINE;
@@ -243,34 +231,6 @@ int cpu_architecture(void)
 	return cpu_arch;
 }
 
-static int cpu_has_aliasing_icache(unsigned int arch)
-{
-	int aliasing_icache;
-	unsigned int id_reg, num_sets, line_size;
-
-	/* arch specifies the register format */
-	switch (arch) {
-	case CPU_ARCH_ARMv7:
-		asm("mcr	p15, 2, %1, c0, c0, 0	@ set CSSELR\n"
-		    "isb\n"
-		    "mrc	p15, 1, %0, c0, c0, 0	@ read CCSIDR"
-		    : "=r" (id_reg)
-		    : "r" (1));
-		line_size = 4 << ((id_reg & 0x7) + 2);
-		num_sets = ((id_reg >> 13) & 0x7fff) + 1;
-		aliasing_icache = (line_size * num_sets) > PAGE_SIZE;
-		break;
-	case CPU_ARCH_ARMv6:
-		aliasing_icache = read_cpuid_cachetype() & (1 << 11);
-		break;
-	default:
-		/* I-cache aliases will be handled by D-cache aliasing code */
-		aliasing_icache = 0;
-	}
-
-	return aliasing_icache;
-}
-
 static void __init cacheid_init(void)
 {
 	unsigned int cachetype = read_cpuid_cachetype();
@@ -282,15 +242,10 @@ static void __init cacheid_init(void)
 			cacheid = CACHEID_VIPT_NONALIASING;
 			if ((cachetype & (3 << 14)) == 1 << 14)
 				cacheid |= CACHEID_ASID_TAGGED;
-			else if (cpu_has_aliasing_icache(CPU_ARCH_ARMv7))
-				cacheid |= CACHEID_VIPT_I_ALIASING;
-		} else if (cachetype & (1 << 23)) {
+		} else if (cachetype & (1 << 23))
 			cacheid = CACHEID_VIPT_ALIASING;
-		} else {
+		else
 			cacheid = CACHEID_VIPT_NONALIASING;
-			if (cpu_has_aliasing_icache(CPU_ARCH_ARMv6))
-				cacheid |= CACHEID_VIPT_I_ALIASING;
-		}
 	} else {
 		cacheid = CACHEID_VIVT;
 	}
@@ -301,7 +256,7 @@ static void __init cacheid_init(void)
 		cache_is_vipt_nonaliasing() ? "VIPT nonaliasing" : "unknown",
 		cache_is_vivt() ? "VIVT" :
 		icache_is_vivt_asid_tagged() ? "VIVT ASID tagged" :
-		icache_is_vipt_aliasing() ? "VIPT aliasing" :
+		cache_is_vipt_aliasing() ? "VIPT aliasing" :
 		cache_is_vipt_nonaliasing() ? "VIPT nonaliasing" : "unknown");
 }
 
@@ -445,12 +400,13 @@ static int __init arm_add_memory(unsigned long start, unsigned long size)
 	size -= start & ~PAGE_MASK;
 	bank->start = PAGE_ALIGN(start);
 	bank->size  = size & PAGE_MASK;
+	bank->node  = PHYS_TO_NID(start);
 
 	/*
 	 * Check whether this memory region has non-zero size or
 	 * invalid node number.
 	 */
-	if (bank->size == 0)
+	if (bank->size == 0 || bank->node >= MAX_NUMNODES)
 		return -EINVAL;
 
 	meminfo.nr_banks++;
@@ -461,11 +417,10 @@ static int __init arm_add_memory(unsigned long start, unsigned long size)
  * Pick out the memory size.  We look for mem=size@start,
  * where start and size are "size[KkMm]"
  */
-static int __init early_mem(char *p)
+static void __init early_mem(char **p)
 {
 	static int usermem __initdata = 0;
 	unsigned long size, start;
-	char *endp;
 
 	/*
 	 * If the user specifies memory size, we
@@ -478,15 +433,52 @@ static int __init early_mem(char *p)
 	}
 
 	start = PHYS_OFFSET;
-	size  = memparse(p, &endp);
-	if (*endp == '@')
-		start = memparse(endp + 1, NULL);
+	size  = memparse(*p, p);
+	if (**p == '@')
+		start = memparse(*p + 1, p);
 
 	arm_add_memory(start, size);
-
-	return 0;
 }
-early_param("mem", early_mem);
+__early_param("mem=", early_mem);
+
+/*
+ * Initial parsing of the command line.
+ */
+static void __init parse_cmdline(char **cmdline_p, char *from)
+{
+	char c = ' ', *to = command_line;
+	int len = 0;
+
+	for (;;) {
+		if (c == ' ') {
+			extern struct early_params __early_begin, __early_end;
+			struct early_params *p;
+
+			for (p = &__early_begin; p < &__early_end; p++) {
+				int arglen = strlen(p->arg);
+
+				if (memcmp(from, p->arg, arglen) == 0) {
+					if (to != command_line)
+						to -= 1;
+					from += arglen;
+					p->fn(&from);
+
+					while (*from != ' ' && *from != '\0')
+						from++;
+					break;
+				}
+			}
+		}
+		c = *from++;
+		if (!c)
+			break;
+		if (COMMAND_LINE_SIZE <= ++len)
+			break;
+		*to++ = c;
+	}
+	*to = '\0';
+	*cmdline_p = command_line;
+}
 
 static void __init
 setup_ramdisk(int doload, int prompt, int image_start, unsigned int rd_sz)
@@ -511,7 +503,7 @@ request_standard_resources(struct meminfo *mi, struct machine_desc *mdesc)
 
 	kernel_code.start   = virt_to_phys(_text);
 	kernel_code.end     = virt_to_phys(_etext - 1);
-	kernel_data.start   = virt_to_phys(_sdata);
+	kernel_data.start   = virt_to_phys(_data);
 	kernel_data.end     = virt_to_phys(_end - 1);
 
 	for (i = 0; i < mi->nr_banks; i++) {
@@ -643,62 +635,6 @@ static int __init parse_tag_cmdline(const struct tag *tag)
 
 __tagtable(ATAG_CMDLINE, parse_tag_cmdline);
 
-#ifdef CONFIG_BOOTINFO
-
-static int __init parse_tag_powerup_reason(const struct tag *tag)
-{
-	bi_set_powerup_reason(tag->u.powerup_reason.powerup_reason);
-	printk(KERN_WARNING "%s: powerup reason=0x%08x\n",
-				__func__, bi_powerup_reason());
-	return 0;
-}
-
-__tagtable(ATAG_POWERUP_REASON, parse_tag_powerup_reason);
-
-static int __init parse_tag_mbm_version(const struct tag *tag)
-{
-	bi_set_mbm_version(tag->u.mbm_version.mbm_version);
-	printk(KERN_INFO "%s: mbm_version=0x%08x\n",
-				__func__, bi_mbm_version());
-	return 0;
-}
-
-__tagtable(ATAG_MBM_VERSION, parse_tag_mbm_version);
-
-static int __init parse_tag_mbm_loader_version(const struct tag *tag)
-{
-	bi_set_mbm_loader_version(tag->
-			u.mbm_loader_version.mbm_loader_version);
-	printk(KERN_INFO "%s: mbm_loader_version=0x%08x\n",
-				__func__, bi_mbm_loader_version());
-	return 0;
-}
-
-__tagtable(ATAG_MBM_LOADER_VERSION, parse_tag_mbm_loader_version);
-
-static int __init parse_tag_battery_status_at_boot(const struct tag *tag)
-{
-	bi_set_battery_status_at_boot(tag->
-			u.battery_status_at_boot.battery_status_at_boot);
-	printk(KERN_INFO "%s: battery_status_at_boot=0x%08x\n",
-				__func__, bi_battery_status_at_boot());
-	return 0;
-}
-
-__tagtable(ATAG_BATTERY_STATUS_AT_BOOT, parse_tag_battery_status_at_boot);
-
-static int __init parse_tag_cid_recover_boot(const struct tag *tag)
-{
-	bi_set_cid_recover_boot(tag->u.cid_recover_boot.cid_recover_boot);
-	printk(KERN_INFO "%s: cid_recover_boot=\"%d\"\n",
-				__func__, bi_cid_recover_boot());
-	return 0;
-}
-
-__tagtable(ATAG_CID_RECOVER_BOOT, parse_tag_cid_recover_boot);
-
-#endif /* CONFIG_BOOTINFO */
-
 /*
  * Scan the tag table for this tag, and call its parse function.
  * The tag table is built by the linker from all the __tagtable
@@ -803,45 +739,10 @@ void __init setup_arch(char **cmdline_p)
 	init_mm.end_data   = (unsigned long) _edata;
 	init_mm.brk	   = (unsigned long) _end;
 
-	/* parse_early_param needs a boot_command_line */
-	strlcpy(boot_command_line, from, COMMAND_LINE_SIZE);
-
-	/* populate command_line too for later use, preserving boot_command_line */
-	strlcpy(command_line, boot_command_line, COMMAND_LINE_SIZE);
-	*cmdline_p = command_line;
-
-	parse_early_param();
-
-	arm_memblock_init(&meminfo);
-
+	memcpy(boot_command_line, from, COMMAND_LINE_SIZE);
+	boot_command_line[COMMAND_LINE_SIZE-1] = '\0';
+	parse_cmdline(cmdline_p, from);
 	paging_init(mdesc);
-#ifdef CONFIG_OF
-	unflatten_device_tree();
-#define DT_PATH_MACHINE		"/Machine@0"
-#define DT_PROP_MACHINE_TYPE	"machine_type"
-#define DT_PROP_CPU_TIER	"cpu_tier"
-	{
-		struct device_node *machine_node;
-		const void *machine_prop;
-		const void *cpu_tier_prop;
-
-		cpu_tier = NULL;
-		machine_node = of_find_node_by_path(DT_PATH_MACHINE);
-		if (machine_node) {
-			machine_prop = of_get_property(machine_node, \
-				DT_PROP_MACHINE_TYPE, NULL);
-			if (machine_prop)
-				machine_name = (char *)machine_prop;
-
-			cpu_tier_prop = of_get_property(machine_node, \
-				DT_PROP_CPU_TIER, NULL);
-			if (cpu_tier_prop)
-				cpu_tier = (char *)cpu_tier_prop;
-
-			of_node_put(machine_node);
-		}
-	}
-#endif
 	request_standard_resources(&meminfo, mdesc);
 
 #ifdef CONFIG_SMP
@@ -906,19 +807,7 @@ static const char *hwcap_str[] = {
 static int c_show(struct seq_file *m, void *v)
 {
 	int i;
-#if defined(CONFIG_ARM_OF)
-	static char *p = NULL;
-	int len = strlen(bp_model);
 
-	if (!p && len) {
-		p = kmalloc(strlen(machine_name) + len + 1, GFP_KERNEL);
-		if (p) {
-			*p = '\0';
-			strcat(p, machine_name);
-			machine_name = strcat(p, bp_model);
-		}
-	}
-#endif
 	seq_printf(m, "Processor\t: %s rev %d (%s)\n",
 		   cpu_name, read_cpuid_id() & 15, elf_platform);
 
@@ -974,8 +863,7 @@ static int c_show(struct seq_file *m, void *v)
 	seq_printf(m, "Revision\t: %04x\n", system_rev);
 	seq_printf(m, "Serial\t\t: %08x%08x\n",
 		   system_serial_high, system_serial_low);
-	if (cpu_tier)
-		seq_printf(m, "CPU Tier\t: %s\n", cpu_tier);
+
 	return 0;
 }
 

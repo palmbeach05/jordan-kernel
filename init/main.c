@@ -97,11 +97,6 @@ static inline void mark_rodata_ro(void) { }
 #ifdef CONFIG_TC
 extern void tc_init(void);
 #endif
-#ifdef USE_IMMEDIATE
-extern void imv_init_complete(void);
-#else
-static inline void imv_init_complete(void) { }
-#endif
 
 enum system_states system_state __read_mostly;
 EXPORT_SYMBOL(system_state);
@@ -165,7 +160,7 @@ static int __init maxcpus(char *str)
 
 early_param("maxcpus", maxcpus);
 #else
-static const unsigned int setup_max_cpus = NR_CPUS;
+const unsigned int setup_max_cpus = NR_CPUS;
 #endif
 
 /*
@@ -192,11 +187,11 @@ static char * argv_init[MAX_INIT_ARGS+2] = { "init", NULL, };
 char * envp_init[MAX_INIT_ENVS+2] = { "HOME=/", "TERM=linux", NULL, };
 static const char *panic_later, *panic_param;
 
-extern const struct obs_kernel_param __setup_start[], __setup_end[];
+extern struct obs_kernel_param __setup_start[], __setup_end[];
 
 static int __init obsolete_checksetup(char *line)
 {
-	const struct obs_kernel_param *p;
+	struct obs_kernel_param *p;
 	int had_early_param = 0;
 
 	p = __setup_start;
@@ -374,6 +369,12 @@ static void __init smp_init(void)
 {
 	unsigned int cpu;
 
+	/*
+	 * Set up the current CPU as possible to migrate to.
+	 * The other ones will be done by cpu_up/cpu_down()
+	 */
+	set_cpu_active(smp_processor_id(), true);
+
 	/* FIXME: This should be done in userspace --RR */
 	for_each_present_cpu(cpu) {
 		if (num_online_cpus() >= setup_max_cpus)
@@ -440,7 +441,7 @@ static noinline void __init_refok rest_init(void)
 /* Check for early params. */
 static int __init do_early_param(char *param, char *val)
 {
-	const struct obs_kernel_param *p;
+	struct obs_kernel_param *p;
 
 	for (p = __setup_start; p < __setup_end; p++) {
 		if ((p->early && strcmp(param, p->str) == 0) ||
@@ -485,7 +486,6 @@ static void __init boot_cpu_init(void)
 	int cpu = smp_processor_id();
 	/* Mark the boot cpu "present", "online" etc for SMP and UP case */
 	set_cpu_online(cpu, true);
-	set_cpu_active(cpu, true);
 	set_cpu_present(cpu, true);
 	set_cpu_possible(cpu, true);
 }
@@ -517,7 +517,7 @@ static void __init mm_init(void)
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
-	extern const struct kernel_param __start___param[], __stop___param[];
+	extern struct kernel_param __start___param[], __stop___param[];
 
 	smp_setup_processor_id();
 
@@ -534,7 +534,6 @@ asmlinkage void __init start_kernel(void)
 	boot_init_stack_canary();
 
 	cgroup_init_early();
-	core_imv_update();
 
 	local_irq_disable();
 	early_boot_irqs_off();
@@ -590,7 +589,6 @@ asmlinkage void __init start_kernel(void)
 		local_irq_disable();
 	}
 	rcu_init();
-	radix_tree_init();
 	/* init some links before init_ISA_irqs() */
 	early_irq_init();
 	init_IRQ();
@@ -608,7 +606,7 @@ asmlinkage void __init start_kernel(void)
 	local_irq_enable();
 
 	/* Interrupts are enabled now so all GFP allocations are safe. */
-	gfp_allowed_mask = __GFP_BITS_MASK;
+	set_gfp_allowed_mask(__GFP_BITS_MASK);
 
 	kmem_cache_init_late();
 
@@ -666,6 +664,7 @@ asmlinkage void __init start_kernel(void)
 	key_init();
 	security_init();
 	vfs_caches_init(totalram_pages);
+	radix_tree_init();
 	signals_init();
 	/* rootfs populating might need page-writeback */
 	page_writeback_init();
@@ -676,7 +675,6 @@ asmlinkage void __init start_kernel(void)
 	cpuset_init();
 	taskstats_init_early();
 	delayacct_init();
-	imv_init_complete();
 
 	check_bugs();
 
@@ -807,7 +805,6 @@ static noinline int init_post(void)
 {
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
-	imv_unref_core_init();
 	free_initmem();
 	unlock_kernel();
 	mark_rodata_ro();
@@ -844,8 +841,7 @@ static noinline int init_post(void)
 	run_init_process("/bin/init");
 	run_init_process("/bin/sh");
 
-	panic("No init found.  Try passing init= option to kernel. "
-	      "See Linux Documentation/init.txt for guidance.");
+	panic("No init found.  Try passing init= option to kernel.");
 }
 
 static int __init kernel_init(void * unused)
@@ -855,7 +851,7 @@ static int __init kernel_init(void * unused)
 	/*
 	 * init can allocate pages on any node
 	 */
-	set_mems_allowed(node_states[N_HIGH_MEMORY]);
+	set_mems_allowed(node_possible_map);
 	/*
 	 * init can run on any cpu.
 	 */

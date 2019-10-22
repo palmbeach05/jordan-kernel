@@ -22,7 +22,6 @@
 #include <linux/scatterlist.h>
 #include <linux/log2.h>
 #include <linux/regulator/consumer.h>
-#include <linux/wakelock.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -59,7 +58,6 @@ int mmc_assume_removable;
 #else
 int mmc_assume_removable = 1;
 #endif
-EXPORT_SYMBOL(mmc_assume_removable);
 module_param_named(removable, mmc_assume_removable, bool, 0644);
 MODULE_PARM_DESC(
 	removable,
@@ -69,12 +67,6 @@ MODULE_PARM_DESC(
  * Internal function. Schedule delayed work in the MMC work queue.
  */
 static int mmc_schedule_delayed_work(struct delayed_work *work,
-				     unsigned long delay)
-{
-	return queue_delayed_work(workqueue, work, delay);
-}
-
-static int mmc_schedule_delayed_work_lock(struct delayed_work *work,
 				     unsigned long delay)
 {
 	return queue_delayed_work(workqueue, work, delay);
@@ -310,7 +302,7 @@ void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card)
 			 * The limit is really 250 ms, but that is
 			 * insufficient for some crappy cards.
 			 */
-			limit_us = 3000000;
+			limit_us = 300000;
 		else
 			limit_us = 100000;
 
@@ -530,14 +522,7 @@ int mmc_try_claim_host(struct mmc_host *host)
 }
 EXPORT_SYMBOL(mmc_try_claim_host);
 
-/**
- *	mmc_do_release_host - release a claimed host
- *	@host: mmc host to release
- *
- *	If you successfully claimed a host, this function will
- *	release it again.
- */
-void mmc_do_release_host(struct mmc_host *host)
+static void mmc_do_release_host(struct mmc_host *host)
 {
 	unsigned long flags;
 
@@ -552,7 +537,6 @@ void mmc_do_release_host(struct mmc_host *host)
 		wake_up(&host->wq);
 	}
 }
-EXPORT_SYMBOL(mmc_do_release_host);
 
 void mmc_host_deeper_disable(struct work_struct *work)
 {
@@ -564,7 +548,6 @@ void mmc_host_deeper_disable(struct work_struct *work)
 		return;
 	mmc_host_do_disable(host, 1);
 	mmc_do_release_host(host);
-
 }
 
 /**
@@ -945,15 +928,6 @@ static void mmc_power_off(struct mmc_host *host)
 {
 	host->ios.clock = 0;
 	host->ios.vdd = 0;
-
-
-	/*
-	 * Reset ocr mask to be the highest possible voltage supported for
-	 * this mmc host. This value will be used at next power up.
-	 */
-	host->ocr = 1 << (fls(host->ocr_avail) - 1);
-
-
 	if (!mmc_host_is_spi(host)) {
 		host->ios.bus_mode = MMC_BUSMODE_OPENDRAIN;
 		host->ios.chip_select = MMC_CS_DONTCARE;
@@ -1002,29 +976,6 @@ static inline void mmc_bus_put(struct mmc_host *host)
 		__mmc_release_bus(host);
 	spin_unlock_irqrestore(&host->lock, flags);
 }
-
-int mmc_resume_bus(struct mmc_host *host)
-{
-	if (!mmc_bus_needs_resume(host))
-		return -EINVAL;
-
-	printk("%s: Starting deferred resume\n", mmc_hostname(host));
-	host->bus_resume_flags &= ~MMC_BUSRESUME_NEEDS_RESUME;
-        mmc_bus_get(host);
-	if (host->bus_ops && !host->bus_dead) {
-		mmc_power_up(host);
-		BUG_ON(!host->bus_ops->resume);
-		host->bus_ops->resume(host);
-	}
-
-	mmc_detect_change(host, 0);
-
-	mmc_bus_put(host);
-	printk("%s: Deferred resume completed\n", mmc_hostname(host));
-	return 0;
-}
-
-EXPORT_SYMBOL(mmc_resume_bus);
 
 /*
  * Assign a mmc bus handler to a host. Only one bus handler may control a
@@ -1093,7 +1044,8 @@ void mmc_detect_change(struct mmc_host *host, unsigned long delay)
 	WARN_ON(host->removed);
 	spin_unlock_irqrestore(&host->lock, flags);
 #endif
-	mmc_schedule_delayed_work_lock(&host->detect, delay);
+
+	mmc_schedule_delayed_work(&host->detect, delay);
 }
 
 EXPORT_SYMBOL(mmc_detect_change);
@@ -1105,19 +1057,12 @@ void mmc_rescan(struct work_struct *work)
 		container_of(work, struct mmc_host, detect.work);
 	u32 ocr;
 	int err;
-	int extend_wakelock = 0;
 
 	mmc_bus_get(host);
 
 	/* if there is a card registered, check whether it is still present */
 	if ((host->bus_ops != NULL) && host->bus_ops->detect && !host->bus_dead)
 		host->bus_ops->detect(host);
-
-	/* If the card was removed the bus will be marked
-	 * as dead - extend the wakelock so userspace
-	 * can respond */
-	if (host->bus_dead)
-		extend_wakelock = 1;
 
 	mmc_bus_put(host);
 
@@ -1144,7 +1089,6 @@ void mmc_rescan(struct work_struct *work)
 	mmc_claim_host(host);
 
 	mmc_power_up(host);
-	sdio_reset(host);
 	mmc_go_idle(host);
 
 	mmc_send_if_cond(host, host->ocr_avail);
@@ -1156,7 +1100,6 @@ void mmc_rescan(struct work_struct *work)
 	if (!err) {
 		if (mmc_attach_sdio(host, ocr))
 			mmc_power_off(host);
-		extend_wakelock = 1;
 		goto out;
 	}
 
@@ -1167,7 +1110,6 @@ void mmc_rescan(struct work_struct *work)
 	if (!err) {
 		if (mmc_attach_sd(host, ocr))
 			mmc_power_off(host);
-		extend_wakelock = 1;
 		goto out;
 	}
 
@@ -1178,7 +1120,6 @@ void mmc_rescan(struct work_struct *work)
 	if (!err) {
 		if (mmc_attach_mmc(host, ocr))
 			mmc_power_off(host);
-		extend_wakelock = 1;
 		goto out;
 	}
 
@@ -1186,15 +1127,14 @@ void mmc_rescan(struct work_struct *work)
 	mmc_power_off(host);
 
 out:
-
 	if (host->caps & MMC_CAP_NEEDS_POLL)
-		mmc_schedule_delayed_work_lock(&host->detect, HZ);
+		mmc_schedule_delayed_work(&host->detect, HZ);
 }
 
 void mmc_start_host(struct mmc_host *host)
 {
 	mmc_power_off(host);
-	mmc_detect_change(host, msecs_to_jiffies(host->init_delay));
+	mmc_detect_change(host, 0);
 }
 
 void mmc_stop_host(struct mmc_host *host)
@@ -1208,11 +1148,8 @@ void mmc_stop_host(struct mmc_host *host)
 
 	if (host->caps & MMC_CAP_DISABLE)
 		cancel_delayed_work(&host->disable);
-
+	cancel_delayed_work(&host->detect);
 	mmc_flush_scheduled_work();
-
-	/* clear pm flags now and let card drivers set them as needed */
-	host->pm_flags = 0;
 
 	mmc_bus_get(host);
 	if (host->bus_ops && !host->bus_dead) {
@@ -1232,49 +1169,37 @@ void mmc_stop_host(struct mmc_host *host)
 	mmc_power_off(host);
 }
 
-int mmc_power_save_host(struct mmc_host *host)
+void mmc_power_save_host(struct mmc_host *host)
 {
-	int ret = 0;
-
 	mmc_bus_get(host);
 
 	if (!host->bus_ops || host->bus_dead || !host->bus_ops->power_restore) {
 		mmc_bus_put(host);
-		return -EINVAL;
+		return;
 	}
 
 	if (host->bus_ops->power_save)
-		ret = host->bus_ops->power_save(host);
+		host->bus_ops->power_save(host);
 
 	mmc_bus_put(host);
 
 	mmc_power_off(host);
-
-//Quarx FIXME Pleaseee
-//Allow to restart wifi
-	mmc_reinit_host(host);
-//
-	return ret;
 }
 EXPORT_SYMBOL(mmc_power_save_host);
 
-int mmc_power_restore_host(struct mmc_host *host)
+void mmc_power_restore_host(struct mmc_host *host)
 {
-	int ret;
-
 	mmc_bus_get(host);
 
 	if (!host->bus_ops || host->bus_dead || !host->bus_ops->power_restore) {
 		mmc_bus_put(host);
-		return -EINVAL;
+		return;
 	}
 
 	mmc_power_up(host);
-	ret = host->bus_ops->power_restore(host);
+	host->bus_ops->power_restore(host);
 
 	mmc_bus_put(host);
-
-	return ret;
 }
 EXPORT_SYMBOL(mmc_power_restore_host);
 
@@ -1329,12 +1254,9 @@ int mmc_suspend_host(struct mmc_host *host, pm_message_t state)
 {
 	int err = 0;
 
-	if (mmc_bus_needs_resume(host))
-		return 0;
-
 	if (host->caps & MMC_CAP_DISABLE)
 		cancel_delayed_work(&host->disable);
-
+	cancel_delayed_work(&host->detect);
 	mmc_flush_scheduled_work();
 
 	mmc_bus_get(host);
@@ -1351,13 +1273,12 @@ int mmc_suspend_host(struct mmc_host *host, pm_message_t state)
 			mmc_claim_host(host);
 			mmc_detach_bus(host);
 			mmc_release_host(host);
-			host->pm_flags = 0;
 			err = 0;
 		}
 	}
 	mmc_bus_put(host);
 
-	if (!err && !mmc_card_keep_power(host))
+	if (!err)
 		mmc_power_off(host);
 
 	return err;
@@ -1374,27 +1295,24 @@ int mmc_resume_host(struct mmc_host *host)
 	int err = 0;
 
 	mmc_bus_get(host);
-	if (host->bus_resume_flags & MMC_BUSRESUME_MANUAL_RESUME) {
-		host->bus_resume_flags |= MMC_BUSRESUME_NEEDS_RESUME;
-		mmc_bus_put(host);
-		return 0;
-	}
-
 	if (host->bus_ops && !host->bus_dead) {
-		if (!mmc_card_keep_power(host)) {
-			mmc_power_up(host);
-			mmc_select_voltage(host, host->ocr);
-		}
+		mmc_power_up(host);
+		mmc_select_voltage(host, host->ocr);
 		BUG_ON(!host->bus_ops->resume);
 		err = host->bus_ops->resume(host);
 		if (err) {
 			printk(KERN_WARNING "%s: error %d during resume "
 					    "(card was removed?)\n",
 					    mmc_hostname(host), err);
+			if (host->bus_ops->remove)
+				host->bus_ops->remove(host);
+			mmc_claim_host(host);
+			mmc_detach_bus(host);
+			mmc_release_host(host);
+			/* no need to bother upper layers */
 			err = 0;
 		}
 	}
-	host->pm_flags &= ~MMC_PM_KEEP_POWER;
 	mmc_bus_put(host);
 
 	/*
@@ -1408,57 +1326,6 @@ int mmc_resume_host(struct mmc_host *host)
 
 EXPORT_SYMBOL(mmc_resume_host);
 
-#endif
-
-/**
- *     mmc_reinit_host - reinit a host
- *     @host: mmc host
- */
-int mmc_reinit_host(struct mmc_host *host)
-{
-	int err = -1;
-
-	mmc_bus_get(host);
-
-	if (!host->bus_ops || !host->bus_ops->resume || host->bus_dead) {
-		mmc_bus_put(host);
-		goto out;
-	}
-
-	mmc_power_off(host);
-	mmc_power_up(host);
-	mmc_select_voltage(host, host->ocr);
-	err = host->bus_ops->resume(host);
-	if (err)
-		printk(KERN_WARNING "%s: error %d during reinit\n",
-			mmc_hostname(host), err);
-
-	mmc_bus_put(host);
-out:
-	/*
-	 * We add a slight delay here so that resume can progress
-	 * in parallel.
-	 */
-	mmc_detect_change(host, 1);
-
-	return err;
-}
-EXPORT_SYMBOL(mmc_reinit_host);
-
-#ifdef CONFIG_MMC_EMBEDDED_SDIO
-void mmc_set_embedded_sdio_data(struct mmc_host *host,
-				struct sdio_cis *cis,
-				struct sdio_cccr *cccr,
-				struct sdio_embedded_func *funcs,
-				int num_funcs)
-{
-	host->embedded_sdio_data.cis = cis;
-	host->embedded_sdio_data.cccr = cccr;
-	host->embedded_sdio_data.funcs = funcs;
-	host->embedded_sdio_data.num_funcs = num_funcs;
-}
-
-EXPORT_SYMBOL(mmc_set_embedded_sdio_data);
 #endif
 
 static int __init mmc_init(void)

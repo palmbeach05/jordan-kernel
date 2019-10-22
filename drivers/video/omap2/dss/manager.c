@@ -341,7 +341,7 @@ static ssize_t manager_attr_store(struct kobject *kobj, struct attribute *attr,
 	return manager_attr->store(manager, buf, size);
 }
 
-static const struct sysfs_ops manager_sysfs_ops = {
+static struct sysfs_ops manager_sysfs_ops = {
 	.show = manager_attr_show,
 	.store = manager_attr_store,
 };
@@ -442,7 +442,7 @@ struct manager_cache_data {
 };
 
 static struct {
-	spinlock_t lock;  /* need comment */
+	spinlock_t lock;
 	struct overlay_cache_data overlay_cache[3];
 	struct manager_cache_data manager_cache[2];
 
@@ -757,8 +757,8 @@ static int configure_overlay(enum omap_plane plane)
 
 		if (dispc_is_overlay_scaled(c)) {
 			/* If the overlay is scaled, the update area has
-			 * already been enlarged to cover the whole overlay.
-			 * We only need to adjust x/y here */
+			 * already been enlarged to cover the whole overlay. We
+			 * only need to adjust x/y here */
 			x = c->pos_x - mc->x;
 			y = c->pos_y - mc->y;
 		} else {

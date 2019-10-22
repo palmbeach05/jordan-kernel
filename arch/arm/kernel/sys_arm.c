@@ -27,9 +27,6 @@
 #include <linux/file.h>
 #include <linux/ipc.h>
 #include <linux/uaccess.h>
-#include <trace/ipc.h>
-
-DEFINE_TRACE(ipc_call);
 
 struct mmap_arg_struct {
 	unsigned long addr;
@@ -57,6 +54,27 @@ out:
 	return error;
 }
 
+/*
+ * Perform the select(nd, in, out, ex, tv) and mmap() system
+ * calls.
+ */
+
+struct sel_arg_struct {
+	unsigned long n;
+	fd_set __user *inp, *outp, *exp;
+	struct timeval __user *tvp;
+};
+
+asmlinkage int old_select(struct sel_arg_struct __user *arg)
+{
+	struct sel_arg_struct a;
+
+	if (copy_from_user(&a, arg, sizeof(a)))
+		return -EFAULT;
+	/* sys_select() does the appropriate kernel locking */
+	return sys_select(a.n, a.inp, a.outp, a.exp, a.tvp);
+}
+
 #if !defined(CONFIG_AEABI) || defined(CONFIG_OABI_COMPAT)
 /*
  * sys_ipc() is the de-multiplexer for the SysV IPC calls..
@@ -70,8 +88,6 @@ asmlinkage int sys_ipc(uint call, int first, int second, int third,
 
 	version = call >> 16; /* hack for backward compatibility */
 	call &= 0xffff;
-
-	trace_ipc_call(call, first);
 
 	switch (call) {
 	case SEMOP:

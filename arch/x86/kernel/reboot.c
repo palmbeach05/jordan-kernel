@@ -23,7 +23,7 @@
 # include <linux/ctype.h>
 # include <linux/mc146818rtc.h>
 #else
-# include <asm/iommu.h>
+# include <asm/x86_init.h>
 #endif
 
 /*
@@ -201,15 +201,6 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 360"),
 			DMI_MATCH(DMI_BOARD_NAME, "0T656F"),
-		},
-	},
-	{	/* Handle problems with rebooting on Dell OptiPlex 760 with 0G919G*/
-		.callback = set_bios_reboot,
-		.ident = "Dell OptiPlex 760",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 760"),
-			DMI_MATCH(DMI_BOARD_NAME, "0G919G"),
 		},
 	},
 	{	/* Handle problems with rebooting on Dell 2400's */
@@ -639,7 +630,7 @@ void native_machine_shutdown(void)
 #endif
 
 #ifdef CONFIG_X86_64
-	pci_iommu_shutdown();
+	x86_platform.iommu_shutdown();
 #endif
 }
 

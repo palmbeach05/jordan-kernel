@@ -83,7 +83,6 @@ struct vm_area_struct;
 #define GFP_HIGHUSER_MOVABLE	(__GFP_WAIT | __GFP_IO | __GFP_FS | \
 				 __GFP_HARDWALL | __GFP_HIGHMEM | \
 				 __GFP_MOVABLE)
-#define GFP_IOFS	(__GFP_IO | __GFP_FS)
 
 #ifdef CONFIG_NUMA
 #define GFP_THISNODE	(__GFP_THISNODE | __GFP_NOWARN | __GFP_NORETRY)
@@ -326,7 +325,7 @@ void free_pages_exact(void *virt, size_t size);
 
 extern void __free_pages(struct page *page, unsigned int order);
 extern void free_pages(unsigned long addr, unsigned int order);
-extern void free_hot_cold_page(struct page *page, int cold);
+extern void free_hot_page(struct page *page);
 
 #define __free_page(page) __free_pages((page), 0)
 #define free_page(addr) free_pages((addr),0)
@@ -338,7 +337,9 @@ void drain_local_pages(void *dummy);
 
 extern gfp_t gfp_allowed_mask;
 
-extern void set_gfp_allowed_mask(gfp_t mask);
-extern gfp_t clear_gfp_allowed_mask(gfp_t mask);
+static inline void set_gfp_allowed_mask(gfp_t mask)
+{
+	gfp_allowed_mask = mask;
+}
 
 #endif /* __LINUX_GFP_H */

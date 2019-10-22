@@ -34,7 +34,6 @@
 #include <linux/nmi.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
-#include <trace/irq.h>
 
 #include <asm/perf_event.h>
 #include <asm/x86_init.h>
@@ -242,28 +241,13 @@ static int modern_apic(void)
 }
 
 /*
- * bare function to substitute write operation
- * and it's _that_ fast :)
- */
-static void native_apic_write_dummy(u32 reg, u32 v)
-{
-	WARN_ON_ONCE(cpu_has_apic && !disable_apic);
-}
-
-static u32 native_apic_read_dummy(u32 reg)
-{
-	WARN_ON_ONCE((cpu_has_apic && !disable_apic));
-	return 0;
-}
-
-/*
- * right after this call apic->write/read doesn't do anything
- * note that there is no restore operation it works one way
+ * right after this call apic become NOOP driven
+ * so apic->write/read doesn't do anything
  */
 void apic_disable(void)
 {
-	apic->read = native_apic_read_dummy;
-	apic->write = native_apic_write_dummy;
+	pr_info("APIC: switched to apic NOOP\n");
+	apic = &apic_noop;
 }
 
 void native_apic_wait_icr_idle(void)
@@ -460,7 +444,7 @@ static void lapic_timer_setup(enum clock_event_mode mode,
 		v = apic_read(APIC_LVTT);
 		v |= (APIC_LVT_MASKED | LOCAL_TIMER_VECTOR);
 		apic_write(APIC_LVTT, v);
-		apic_write(APIC_TMICT, 0xffffffff);
+		apic_write(APIC_TMICT, 0);
 		break;
 	case CLOCK_EVT_MODE_RESUME:
 		/* Nothing to do here */
@@ -663,7 +647,7 @@ static int __init calibrate_APIC_clock(void)
 	calibration_result = (delta * APIC_DIVISOR) / LAPIC_CAL_LOOPS;
 
 	apic_printk(APIC_VERBOSE, "..... delta %ld\n", delta);
-	apic_printk(APIC_VERBOSE, "..... mult: %ld\n", lapic_clockevent.mult);
+	apic_printk(APIC_VERBOSE, "..... mult: %u\n", lapic_clockevent.mult);
 	apic_printk(APIC_VERBOSE, "..... calibration result: %u\n",
 		    calibration_result);
 
@@ -844,9 +828,7 @@ void __irq_entry smp_apic_timer_interrupt(struct pt_regs *regs)
 	 */
 	exit_idle();
 	irq_enter();
-	trace_irq_entry(LOCAL_TIMER_VECTOR, regs, NULL);
 	local_apic_timer_interrupt();
-	trace_irq_exit(IRQ_HANDLED);
 	irq_exit();
 
 	set_irq_regs(old_regs);
@@ -1359,7 +1341,7 @@ void enable_x2apic(void)
 
 	rdmsr(MSR_IA32_APICBASE, msr, msr2);
 	if (!(msr & X2APIC_ENABLE)) {
-		pr_info("Enabling x2apic\n");
+		printk_once(KERN_INFO "Enabling x2apic\n");
 		wrmsr(MSR_IA32_APICBASE, msr | X2APIC_ENABLE, 0);
 	}
 }
@@ -1395,14 +1377,11 @@ void __init enable_IR_x2apic(void)
 	unsigned long flags;
 	struct IO_APIC_route_entry **ioapic_entries = NULL;
 	int ret, x2apic_enabled = 0;
-	int dmar_table_init_ret = 0;
+	int dmar_table_init_ret;
 
-#ifdef CONFIG_INTR_REMAP
 	dmar_table_init_ret = dmar_table_init();
-	if (dmar_table_init_ret)
-		pr_debug("dmar_table_init() failed with %d:\n",
-				dmar_table_init_ret);
-#endif
+	if (dmar_table_init_ret && !x2apic_supported())
+		return;
 
 	ioapic_entries = alloc_ioapic_entries();
 	if (!ioapic_entries) {
@@ -1733,7 +1712,6 @@ void smp_spurious_interrupt(struct pt_regs *regs)
 
 	exit_idle();
 	irq_enter();
-	trace_irq_entry(SPURIOUS_APIC_VECTOR, NULL, NULL);
 	/*
 	 * Check if this really is a spurious interrupt and ACK it
 	 * if it is a vectored one.  Just in case...
@@ -1748,7 +1726,6 @@ void smp_spurious_interrupt(struct pt_regs *regs)
 	/* see sw-dev-man vol 3, chapter 7.4.13.5 */
 	pr_info("spurious APIC interrupt on CPU#%d, "
 		"should never happen.\n", smp_processor_id());
-	trace_irq_exit(IRQ_HANDLED);
 	irq_exit();
 }
 
@@ -1761,7 +1738,6 @@ void smp_error_interrupt(struct pt_regs *regs)
 
 	exit_idle();
 	irq_enter();
-	trace_irq_entry(ERROR_APIC_VECTOR, NULL, NULL);
 	/* First tickle the hardware, only then report what went on. -- REW */
 	v = apic_read(APIC_ESR);
 	apic_write(APIC_ESR, 0);
@@ -1782,7 +1758,6 @@ void smp_error_interrupt(struct pt_regs *regs)
 	 */
 	pr_debug("APIC error on CPU%d: %02x(%02x)\n",
 		smp_processor_id(), v , v1);
-	trace_irq_exit(IRQ_HANDLED);
 	irq_exit();
 }
 

@@ -15,7 +15,6 @@
 #include <linux/bug.h>
 #include <linux/nmi.h>
 #include <linux/sysfs.h>
-#include <linux/ltt-core.h>
 
 #include <asm/stacktrace.h>
 
@@ -238,8 +237,6 @@ void __kprobes oops_end(unsigned long flags, struct pt_regs *regs, int signr)
 
 	if (!signr)
 		return;
-	if (in_nmi())
-		panic("Fatal exception in non-maskable interrupt");
 	if (in_interrupt())
 		panic("Fatal exception in interrupt");
 	if (panic_on_oops)
@@ -264,10 +261,6 @@ int __kprobes __die(const char *str, struct pt_regs *regs, long err)
 	printk("DEBUG_PAGEALLOC");
 #endif
 	printk("\n");
-#ifdef CONFIG_LTT
-	printk(KERN_EMERG "LTT NESTING LEVEL : %u", __get_cpu_var(ltt_nesting));
-	printk("\n");
-#endif
 	sysfs_printk_last_file();
 	if (notify_die(DIE_OOPS, str, regs, err,
 			current->thread.trap_no, SIGSEGV) == NOTIFY_STOP)
@@ -275,11 +268,12 @@ int __kprobes __die(const char *str, struct pt_regs *regs, long err)
 
 	show_registers(regs);
 #ifdef CONFIG_X86_32
-	sp = (unsigned long) (&regs->sp);
-	savesegment(ss, ss);
-	if (user_mode(regs)) {
+	if (user_mode_vm(regs)) {
 		sp = regs->sp;
 		ss = regs->ss & 0xffff;
+	} else {
+		sp = kernel_stack_pointer(regs);
+		savesegment(ss, ss);
 	}
 	printk(KERN_EMERG "EIP: [<%08lx>] ", regs->ip);
 	print_symbol("%s", regs->ip);

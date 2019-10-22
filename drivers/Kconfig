@@ -1,5 +1,3 @@
-# drivers/Kconfig
-
 menu "Device Drivers"
 
 source "drivers/base/Kconfig"
@@ -90,8 +88,6 @@ source "drivers/memstick/Kconfig"
 
 source "drivers/leds/Kconfig"
 
-source "drivers/switch/Kconfig"
-
 source "drivers/accessibility/Kconfig"
 
 source "drivers/infiniband/Kconfig"
@@ -99,6 +95,8 @@ source "drivers/infiniband/Kconfig"
 source "drivers/edac/Kconfig"
 
 source "drivers/rtc/Kconfig"
+
+source "drivers/clocksource/Kconfig"
 
 source "drivers/dma/Kconfig"
 
@@ -115,6 +113,4 @@ source "drivers/xen/Kconfig"
 source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
-
-source "drivers/sim/Kconfig"
 endmenu

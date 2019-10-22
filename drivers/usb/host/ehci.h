@@ -19,10 +19,6 @@
 #ifndef __LINUX_EHCI_HCD_H
 #define __LINUX_EHCI_HCD_H
 
-#ifdef CONFIG_HAS_WAKELOCK
-#include <linux/wakelock.h>
-#endif
-
 /* definitions used for the EHCI driver */
 
 /*
@@ -160,12 +156,6 @@ struct ehci_hcd {			/* one per controller */
 	struct dentry		*debug_async;
 	struct dentry		*debug_periodic;
 	struct dentry		*debug_registers;
-#endif
-#ifdef CONFIG_HAS_WAKELOCK
-	/* wakelock for remote wakeup */
-	struct wake_lock        wake_lock_ehci_rwu;
-	/* wakelock for suspend/resume */
-	struct wake_lock        wake_lock_ehci_pm;
 #endif
 };
 

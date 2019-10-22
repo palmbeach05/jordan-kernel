@@ -41,23 +41,10 @@ static int etm_setup_address_range(struct tracectx *t, int n,
 		unsigned long start, unsigned long end, int exclude, int data)
 {
 	u32 flags = ETMAAT_ARM | ETMAAT_IGNCONTEXTID | ETMAAT_NSONLY | \
-		ETMAAT_NOVALCMP;
-	u32 dflags = ETMAAT_ARM | ETMAAT_IGNCONTEXTID | ETMAAT_NSONLY | \
-		ETMAAT_NOVALCMP | ETMAAT_DLOADSTORE;
-
+		    ETMAAT_NOVALCMP;
 
 	if (n < 1 || n > t->ncmppairs)
 		return -EINVAL;
-
-/* configure the ViewData */
-	etm_writel(t, dflags, ETMR_COMP_ACC_TYPE(n * 2));
-	etm_writel(t, 0x00000000, ETMR_COMP_VAL(n * 2));
-
-	etm_writel(t, dflags, ETMR_COMP_ACC_TYPE(n * 2 + 1));
-	etm_writel(t, 0xFFFFFFF0, ETMR_COMP_VAL(n * 2 + 1));
-
-	etm_writel(t, 0x11 & ETMVE_RESA_MASK, ETMR_VIEWDATAEVENT);
-	etm_writel(t, 1 << n, ETMR_VIEWDATACTRL3);
 
 	/* comparators and ranges are numbered starting with 1 as opposed
 	 * to bits in a word */
@@ -77,22 +64,15 @@ static int etm_setup_address_range(struct tracectx *t, int n,
 	etm_writel(t, end, ETMR_COMP_VAL(n * 2 + 1));
 
 	flags = exclude ? ETMTE_INCLEXCL : 0;
-	flags |= ETMTE_CTLENABLE;
 	etm_writel(t, flags | (1 << n), ETMR_TRACEENCTRL);
 
 	return 0;
 }
 
-static noinline int trace_start(struct tracectx *t)
+static int trace_start(struct tracectx *t)
 {
 	u32 v;
 	unsigned long timeout = TRACER_TIMEOUT;
-	u32 pc;
-	/* third comparator for the starter */
-	__asm__ (
-		"mov %0, lr"
-		: "=r"(pc)
-	    );
 
 	etb_unlock(t);
 
@@ -122,24 +102,7 @@ static noinline int trace_start(struct tracectx *t)
 	etm_setup_address_range(t, 1, (unsigned long)_stext,
 			(unsigned long)_etext, 0, 0);
 	etm_writel(t, 0, ETMR_TRACEENCTRL2);
-
-	etm_writel(t, ETMAAT_ARM
-		| ETMAAT_IGNCONTEXTID
-		| ETMAAT_NSONLY
-		| ETMAAT_NOVALCMP
-		| ETMAAT_IEXEC,
-		ETMR_COMP_ACC_TYPE(2));
-	etm_writel(t, pc, ETMR_COMP_VAL(2));
-
-	etm_writel(t, ETMAAT_ARM
-		| ETMAAT_IGNCONTEXTID
-		| ETMAAT_NSONLY
-		| ETMAAT_NOVALCMP
-		| ETMAAT_IEXEC,
-		ETMR_COMP_ACC_TYPE(3));
-	etm_writel(t, 0x81100800, ETMR_COMP_VAL(3));
-
-	etm_writel(t, 0x80004, ETMR_TRACESSCTRL);
+	etm_writel(t, 0, ETMR_TRACESSCTRL);
 	etm_writel(t, 0x6f, ETMR_TRACEENEVT);
 
 	v &= ~ETMCTRL_PROGRAM;
@@ -253,8 +216,7 @@ static void etm_dump(void)
 	printk(KERN_INFO "Trace buffer contents length: %d\n", length);
 	printk(KERN_INFO "--- ETB buffer begin ---\n");
 	for (; length; length--)
-		printk(KERN_INFO "%08x",
-			cpu_to_be32(etb_readl(t, ETBR_READMEM)));
+		printk("%08x", cpu_to_be32(etb_readl(t, ETBR_READMEM)));
 	printk(KERN_INFO "\n--- ETB buffer end ---\n");
 
 	/* deassert the overflow bit */
@@ -360,7 +322,7 @@ static struct miscdevice etb_miscdev = {
 	.fops = &etb_fops,
 };
 
-static int __init etb_probe(struct amba_device *dev, struct amba_id *amba_id)
+static int __init etb_probe(struct amba_device *dev, struct amba_id *id)
 {
 	struct tracectx *t = &tracer;
 	int ret = 0;
@@ -552,7 +514,7 @@ static ssize_t trace_mode_store(struct kobject *kobj,
 static struct kobj_attribute trace_mode_attr =
 	__ATTR(trace_mode, 0644, trace_mode_show, trace_mode_store);
 
-static int __init etm_probe(struct amba_device *dev, struct amba_id *amba_id)
+static int __init etm_probe(struct amba_device *dev, struct amba_id *id)
 {
 	struct tracectx *t = &tracer;
 	int ret = 0;

@@ -106,9 +106,6 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_PFN_AT_MMAP	0x40000000	/* PFNMAP vma that is fully mapped at mmap time */
 #define VM_MERGEABLE	0x80000000	/* KSM may merge identical pages */
 
-/* Bits set in the VMA until the stack is in its final location */
-#define VM_STACK_INCOMPLETE_SETUP	(VM_RAND_READ | VM_SEQ_READ)
-
 #ifndef VM_STACK_DEFAULT_FLAGS		/* arch can override this */
 #define VM_STACK_DEFAULT_FLAGS VM_DATA_DEFAULT_FLAGS
 #endif
@@ -335,7 +332,6 @@ void put_page(struct page *page);
 void put_pages_list(struct list_head *pages);
 
 void split_page(struct page *page, unsigned int order);
-int split_free_page(struct page *page);
 
 /*
  * Compound pages have a destructor function.  Provide a
@@ -647,12 +643,9 @@ static inline struct address_space *page_mapping(struct page *page)
 	struct address_space *mapping = page->mapping;
 
 	VM_BUG_ON(PageSlab(page));
-#ifdef CONFIG_SWAP
 	if (unlikely(PageSwapCache(page)))
 		mapping = &swapper_space;
-	else
-#endif
-	if (unlikely((unsigned long)mapping & PAGE_MAPPING_ANON))
+	else if (unlikely((unsigned long)mapping & PAGE_MAPPING_ANON))
 		mapping = NULL;
 	return mapping;
 }
@@ -732,7 +725,6 @@ extern void show_free_areas(void);
 
 int shmem_lock(struct file *file, int lock, struct user_struct *user);
 struct file *shmem_file_setup(const char *name, loff_t size, unsigned long flags);
-void shmem_set_file(struct vm_area_struct *vma, struct file *file);
 int shmem_zero_setup(struct vm_area_struct *);
 
 #ifndef CONFIG_MMU
@@ -778,6 +770,7 @@ unsigned long unmap_vmas(struct mmu_gather **tlb,
  * @pmd_entry: if set, called for each non-empty PMD (3rd-level) entry
  * @pte_entry: if set, called for each non-empty PTE (4th-level) entry
  * @pte_hole: if set, called for each hole at all levels
+ * @hugetlb_entry: if set, called for each hugetlb entry
  *
  * (see walk_page_range for more details)
  */
@@ -787,6 +780,8 @@ struct mm_walk {
 	int (*pmd_entry)(pmd_t *, unsigned long, unsigned long, struct mm_walk *);
 	int (*pte_entry)(pte_t *, unsigned long, unsigned long, struct mm_walk *);
 	int (*pte_hole)(unsigned long, unsigned long, struct mm_walk *);
+	int (*hugetlb_entry)(pte_t *, unsigned long, unsigned long,
+			     struct mm_walk *);
 	struct mm_struct *mm;
 	void *private;
 };
@@ -872,108 +867,6 @@ extern int mprotect_fixup(struct vm_area_struct *vma,
  */
 int __get_user_pages_fast(unsigned long start, int nr_pages, int write,
 			  struct page **pages);
-/*
- * per-process(per-mm_struct) statistics.
- */
-#if defined(SPLIT_RSS_COUNTING)
-/*
- * The mm counters are not protected by its page_table_lock,
- * so must be incremented atomically.
- */
-static inline void set_mm_counter(struct mm_struct *mm, int member, long value)
-{
-	atomic_long_set(&mm->rss_stat.count[member], value);
-}
-
-unsigned long get_mm_counter(struct mm_struct *mm, int member);
-
-static inline void add_mm_counter(struct mm_struct *mm, int member, long value)
-{
-	atomic_long_add(value, &mm->rss_stat.count[member]);
-}
-
-static inline void inc_mm_counter(struct mm_struct *mm, int member)
-{
-	atomic_long_inc(&mm->rss_stat.count[member]);
-}
-
-static inline void dec_mm_counter(struct mm_struct *mm, int member)
-{
-	atomic_long_dec(&mm->rss_stat.count[member]);
-}
-
-#else  /* !USE_SPLIT_PTLOCKS */
-/*
- * The mm counters are protected by its page_table_lock,
- * so can be incremented directly.
- */
-static inline void set_mm_counter(struct mm_struct *mm, int member, long value)
-{
-	mm->rss_stat.count[member] = value;
-}
-
-static inline unsigned long get_mm_counter(struct mm_struct *mm, int member)
-{
-	return mm->rss_stat.count[member];
-}
-
-static inline void add_mm_counter(struct mm_struct *mm, int member, long value)
-{
-	mm->rss_stat.count[member] += value;
-}
-
-static inline void inc_mm_counter(struct mm_struct *mm, int member)
-{
-	mm->rss_stat.count[member]++;
-}
-
-static inline void dec_mm_counter(struct mm_struct *mm, int member)
-{
-	mm->rss_stat.count[member]--;
-}
-
-#endif /* !USE_SPLIT_PTLOCKS */
-
-static inline unsigned long get_mm_rss(struct mm_struct *mm)
-{
-	return get_mm_counter(mm, MM_FILEPAGES) +
-		get_mm_counter(mm, MM_ANONPAGES);
-}
-
-static inline unsigned long get_mm_hiwater_rss(struct mm_struct *mm)
-{
-	return max(mm->hiwater_rss, get_mm_rss(mm));
-}
-
-static inline unsigned long get_mm_hiwater_vm(struct mm_struct *mm)
-{
-	return max(mm->hiwater_vm, mm->total_vm);
-}
-
-static inline void update_hiwater_rss(struct mm_struct *mm)
-{
-	unsigned long _rss = get_mm_rss(mm);
-
-	if ((mm)->hiwater_rss < _rss)
-		(mm)->hiwater_rss = _rss;
-}
-
-static inline void update_hiwater_vm(struct mm_struct *mm)
-{
-	if (mm->hiwater_vm < mm->total_vm)
-		mm->hiwater_vm = mm->total_vm;
-}
-
-static inline void setmax_mm_hiwater_rss(unsigned long *maxrss,
-					 struct mm_struct *mm)
-{
-	unsigned long hiwater_rss = get_mm_hiwater_rss(mm);
-
-	if (*maxrss < hiwater_rss)
-		*maxrss = hiwater_rss;
-}
-
-void sync_mm_rss(struct task_struct *task, struct mm_struct *mm);
 
 /*
  * A callback you can register to apply pressure to ageable caches.
@@ -1214,7 +1107,7 @@ static inline void vma_nonlinear_insert(struct vm_area_struct *vma,
 
 /* mmap.c */
 extern int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin);
-extern int vma_adjust(struct vm_area_struct *vma, unsigned long start,
+extern void vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end, pgoff_t pgoff, struct vm_area_struct *insert);
 extern struct vm_area_struct *vma_merge(struct mm_struct *,
 	struct vm_area_struct *prev, unsigned long addr, unsigned long end,
@@ -1291,7 +1184,7 @@ int write_one_page(struct page *page, int wait);
 void task_dirty_inc(struct task_struct *tsk);
 
 /* readahead.c */
-#define VM_MAX_READAHEAD	512	/* kbytes */
+#define VM_MAX_READAHEAD	128	/* kbytes */
 #define VM_MIN_READAHEAD	16	/* kbytes (includes current page) */
 
 int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
@@ -1438,11 +1331,17 @@ extern int account_locked_memory(struct mm_struct *mm, struct rlimit *rlim,
 				 size_t size);
 extern void refund_locked_memory(struct mm_struct *mm, size_t size);
 
+enum mf_flags {
+	MF_COUNT_INCREASED = 1 << 0,
+};
 extern void memory_failure(unsigned long pfn, int trapno);
-extern int __memory_failure(unsigned long pfn, int trapno, int ref);
+extern int __memory_failure(unsigned long pfn, int trapno, int flags);
+extern int unpoison_memory(unsigned long pfn);
 extern int sysctl_memory_failure_early_kill;
 extern int sysctl_memory_failure_recovery;
+extern void shake_page(struct page *p, int access);
 extern atomic_long_t mce_bad_pages;
+extern int soft_offline_page(struct page *page, int flags);
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

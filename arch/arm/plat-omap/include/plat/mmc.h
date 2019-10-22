@@ -14,9 +14,6 @@
 #include <linux/types.h>
 #include <linux/device.h>
 #include <linux/mmc/host.h>
-#ifdef CONFIG_MMC_EMBEDDED_SDIO
-#include <asm/mach/mmc.h>
-#endif
 
 #include <plat/board.h>
 
@@ -74,12 +71,6 @@ struct omap_mmc_platform_data {
 
 	u64 dma_mask;
 
-	/* Delay in msec before detecting card */
-	int init_delay;
-
-	/* To identify device name */
-	char * name;
-
 	struct omap_mmc_slot_data {
 
 		/* 4 wire signaling is optional, and is used for SD/SDIO/HSMMC;
@@ -104,12 +95,6 @@ struct omap_mmc_platform_data {
 
 		/* Try to sleep or power off when possible */
 		unsigned power_saving:1;
-
-		/* If using power_saving and the MMC power is not to go off */
-		unsigned no_off:1;
-
-		/* WIFI Keep Power */
-		unsigned keep_power:1;
 
 		int switch_pin;			/* gpio (card detect) */
 		int gpio_wp;			/* gpio (write protect) */
@@ -136,10 +121,7 @@ struct omap_mmc_platform_data {
 		int (* card_detect)(int irq);
 
 		unsigned int ban_openended:1;
-#ifdef CONFIG_MMC_EMBEDDED_SDIO
-		struct embedded_sdio_data *embedded_sdio;
-		int (*register_status_notify)(void (*callback)(int card_present, void *dev_id), void *dev_id);
-#endif
+
 	} slots[OMAP_MMC_MAX_SLOTS];
 };
 

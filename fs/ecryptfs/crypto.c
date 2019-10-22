@@ -381,8 +381,8 @@ out:
 static void ecryptfs_lower_offset_for_extent(loff_t *offset, loff_t extent_num,
 					     struct ecryptfs_crypt_stat *crypt_stat)
 {
-	(*offset) = ecryptfs_lower_header_size(crypt_stat)
-		    + (crypt_stat->extent_size * extent_num);
+	(*offset) = (crypt_stat->num_header_bytes_at_front
+		     + (crypt_stat->extent_size * extent_num));
 }
 
 /**
@@ -834,13 +834,13 @@ void ecryptfs_set_default_sizes(struct ecryptfs_crypt_stat *crypt_stat)
 	set_extent_mask_and_shift(crypt_stat);
 	crypt_stat->iv_bytes = ECRYPTFS_DEFAULT_IV_BYTES;
 	if (crypt_stat->flags & ECRYPTFS_METADATA_IN_XATTR)
-		crypt_stat->metadata_size = ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE;
+		crypt_stat->num_header_bytes_at_front = 0;
 	else {
 		if (PAGE_CACHE_SIZE <= ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE)
-			crypt_stat->metadata_size =
+			crypt_stat->num_header_bytes_at_front =
 				ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE;
 		else
-			crypt_stat->metadata_size = PAGE_CACHE_SIZE;
+			crypt_stat->num_header_bytes_at_front =	PAGE_CACHE_SIZE;
 	}
 }
 
@@ -1107,9 +1107,9 @@ static void write_ecryptfs_marker(char *page_virt, size_t *written)
 	(*written) = MAGIC_ECRYPTFS_MARKER_SIZE_BYTES;
 }
 
-void ecryptfs_write_crypt_stat_flags(char *page_virt,
-				     struct ecryptfs_crypt_stat *crypt_stat,
-				     size_t *written)
+static void
+write_ecryptfs_flags(char *page_virt, struct ecryptfs_crypt_stat *crypt_stat,
+		     size_t *written)
 {
 	u32 flags = 0;
 	int i;
@@ -1237,7 +1237,8 @@ ecryptfs_write_header_metadata(char *virt,
 
 	header_extent_size = (u32)crypt_stat->extent_size;
 	num_header_extents_at_front =
-		(u16)(crypt_stat->metadata_size / crypt_stat->extent_size);
+		(u16)(crypt_stat->num_header_bytes_at_front
+		      / crypt_stat->extent_size);
 	put_unaligned_be32(header_extent_size, virt);
 	virt += 4;
 	put_unaligned_be16(num_header_extents_at_front, virt);
@@ -1290,8 +1291,7 @@ static int ecryptfs_write_headers_virt(char *page_virt, size_t max,
 	offset = ECRYPTFS_FILE_SIZE_BYTES;
 	write_ecryptfs_marker((page_virt + offset), &written);
 	offset += written;
-	ecryptfs_write_crypt_stat_flags((page_virt + offset), crypt_stat,
-					&written);
+	write_ecryptfs_flags((page_virt + offset), crypt_stat, &written);
 	offset += written;
 	ecryptfs_write_header_metadata((page_virt + offset), crypt_stat,
 				       &written);
@@ -1381,7 +1381,7 @@ int ecryptfs_write_metadata(struct dentry *ecryptfs_dentry)
 		rc = -EINVAL;
 		goto out;
 	}
-	virt_len = crypt_stat->metadata_size;
+	virt_len = crypt_stat->num_header_bytes_at_front;
 	order = get_order(virt_len);
 	/* Released in this function */
 	virt = (char *)ecryptfs_get_zeroed_pages(GFP_KERNEL, order);
@@ -1427,15 +1427,16 @@ static int parse_header_metadata(struct ecryptfs_crypt_stat *crypt_stat,
 	header_extent_size = get_unaligned_be32(virt);
 	virt += sizeof(__be32);
 	num_header_extents_at_front = get_unaligned_be16(virt);
-	crypt_stat->metadata_size = (((size_t)num_header_extents_at_front
-				     * (size_t)header_extent_size));
+	crypt_stat->num_header_bytes_at_front =
+		(((size_t)num_header_extents_at_front
+		  * (size_t)header_extent_size));
 	(*bytes_read) = (sizeof(__be32) + sizeof(__be16));
 	if ((validate_header_size == ECRYPTFS_VALIDATE_HEADER_SIZE)
-	    && (crypt_stat->metadata_size
+	    && (crypt_stat->num_header_bytes_at_front
 		< ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE)) {
 		rc = -EINVAL;
 		printk(KERN_WARNING "Invalid header size: [%zd]\n",
-		       crypt_stat->metadata_size);
+		       crypt_stat->num_header_bytes_at_front);
 	}
 	return rc;
 }
@@ -1450,7 +1451,8 @@ static int parse_header_metadata(struct ecryptfs_crypt_stat *crypt_stat,
  */
 static void set_default_header_data(struct ecryptfs_crypt_stat *crypt_stat)
 {
-	crypt_stat->metadata_size = ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE;
+	crypt_stat->num_header_bytes_at_front =
+		ECRYPTFS_MINIMUM_HEADER_EXTENT_SIZE;
 }
 
 /**
@@ -1528,22 +1530,10 @@ out:
  */
 int ecryptfs_read_xattr_region(char *page_virt, struct inode *ecryptfs_inode)
 {
-	struct ecryptfs_inode_info *inode_info =
-		ecryptfs_inode_to_private(ecryptfs_inode);
-	struct dentry *lower_dentry = NULL;
+	struct dentry *lower_dentry =
+		ecryptfs_inode_to_private(ecryptfs_inode)->lower_file->f_dentry;
 	ssize_t size;
 	int rc = 0;
-
-	mutex_lock(&inode_info->lower_file_mutex);
-	if (!inode_info->lower_file) {
-		printk(KERN_INFO "Found null lower_file in read_xattr\n");
-		mutex_unlock(&inode_info->lower_file_mutex);
-		return -EINVAL;
-	}
-
-	lower_dentry = inode_info->lower_file->f_dentry;
-
-	mutex_unlock(&inode_info->lower_file_mutex);
 
 	size = ecryptfs_getxattr_lower(lower_dentry, ECRYPTFS_XATTR_NAME,
 				       page_virt, ECRYPTFS_DEFAULT_EXTENT_SIZE);
@@ -1616,14 +1606,10 @@ int ecryptfs_read_metadata(struct dentry *ecryptfs_dentry)
 						ecryptfs_dentry,
 						ECRYPTFS_VALIDATE_HEADER_SIZE);
 	if (rc) {
-		memset(page_virt, 0, PAGE_CACHE_SIZE);
 		rc = ecryptfs_read_xattr_region(page_virt, ecryptfs_inode);
 		if (rc) {
-			/* disable it because this will generate lots of
-			 * informational messages when there are many "clear"
-			 * files in ecryptfs mounted FS */
-			/*printk(KERN_DEBUG"Valid eCryptfs headers not found in"
-			       " file header region or xattr region\n");*/
+			printk(KERN_DEBUG "Valid eCryptfs headers not found in "
+			       "file header region or xattr region\n");
 			rc = -EINVAL;
 			goto out;
 		}
@@ -1762,7 +1748,7 @@ ecryptfs_process_key_cipher(struct crypto_blkcipher **key_tfm,
 			    char *cipher_name, size_t *key_size)
 {
 	char dummy_key[ECRYPTFS_MAX_KEY_BYTES];
-	char *full_alg_name = NULL;
+	char *full_alg_name;
 	int rc;
 
 	*key_tfm = NULL;
@@ -1777,6 +1763,7 @@ ecryptfs_process_key_cipher(struct crypto_blkcipher **key_tfm,
 	if (rc)
 		goto out;
 	*key_tfm = crypto_alloc_blkcipher(full_alg_name, 0, CRYPTO_ALG_ASYNC);
+	kfree(full_alg_name);
 	if (IS_ERR(*key_tfm)) {
 		rc = PTR_ERR(*key_tfm);
 		printk(KERN_ERR "Unable to allocate crypto cipher with name "
@@ -1799,7 +1786,6 @@ ecryptfs_process_key_cipher(struct crypto_blkcipher **key_tfm,
 		goto out;
 	}
 out:
-	kfree(full_alg_name);
 	return rc;
 }
 

@@ -93,7 +93,16 @@ extern unsigned long omapfb_reserve_sram(unsigned long sram_pstart,
  */
 static int is_sram_locked(void)
 {
-	if (OMAP2_DEVICE_TYPE_GP == omap_type()) {
+	int type = 0;
+
+	if (cpu_is_omap44xx())
+		/* Not yet supported */
+		return 0;
+
+	if (cpu_is_omap242x())
+		type = omap_rev() & OMAP2_DEVICETYPE_MASK;
+
+	if (type == GP_DEVICE) {
 		/* RAMFW: R/W access to all initiators for all qualifier sets */
 		if (cpu_is_omap242x()) {
 			__raw_writel(0xFF, OMAP24XX_VA_REQINFOPERM0); /* all q-vects */
@@ -125,14 +134,12 @@ void __init omap_detect_sram(void)
 	if (cpu_class_is_omap2()) {
 		if (is_sram_locked()) {
 			if (cpu_is_omap34xx()) {
+				omap_sram_base = OMAP3_SRAM_PUB_VA;
+				omap_sram_start = OMAP3_SRAM_PUB_PA;
 				if ((omap_type() == OMAP2_DEVICE_TYPE_EMU) ||
 				    (omap_type() == OMAP2_DEVICE_TYPE_SEC)) {
-					omap_sram_base = OMAP3_SRAM_VA + 0xf000;
-					omap_sram_start = OMAP3_SRAM_PA + 0xf000;
-					omap_sram_size = 0x1000; /* 4K */
+					omap_sram_size = 0x7000; /* 28K */
 				} else {
-					omap_sram_base = OMAP3_SRAM_VA + 0x8000;
-					omap_sram_start = OMAP3_SRAM_PA + 0x8000;
 					omap_sram_size = 0x8000; /* 32K */
 				}
 			} else if (cpu_is_omap44xx()) {
@@ -146,16 +153,9 @@ void __init omap_detect_sram(void)
 			}
 		} else {
 			if (cpu_is_omap34xx()) {
-				if ((omap_type() == OMAP2_DEVICE_TYPE_EMU) ||
-				    (omap_type() == OMAP2_DEVICE_TYPE_SEC)) {
-					omap_sram_base = OMAP3_SRAM_VA + 0xf000;
-					omap_sram_start = OMAP3_SRAM_PA + 0xf000;
-					omap_sram_size = 0x1000; /* 4K */
-				} else {
-					omap_sram_base = OMAP3_SRAM_VA;
-					omap_sram_start = OMAP3_SRAM_PA;
-					omap_sram_size = 0x10000; /* 64K */
-				}
+				omap_sram_base = OMAP3_SRAM_VA;
+				omap_sram_start = OMAP3_SRAM_PA;
+				omap_sram_size = 0x10000; /* 64K */
 			} else if (cpu_is_omap44xx()) {
 				omap_sram_base = OMAP4_SRAM_VA;
 				omap_sram_start = OMAP4_SRAM_PA;
@@ -455,15 +455,3 @@ int __init omap_sram_init(void)
 
 	return 0;
 }
-
-#ifdef CONFIG_OMAP_SECURE_FIQ_HACK
-unsigned long omap_get_sram_va()
-{
-	unsigned long ret = OMAP1_SRAM_VA;
-	if (cpu_is_omap2430())
-		ret = OMAP2_SRAM_VA;
-	else if (cpu_is_omap34xx())
-		ret = OMAP3_SRAM_VA;
-	return ret;
-}
-#endif /* CONFIG_OMAP_SECURE_FIQ_HACK */

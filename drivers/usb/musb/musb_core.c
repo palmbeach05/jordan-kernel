@@ -134,7 +134,7 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" MUSB_DRIVER_NAME);
 
-struct musb *g_musb;
+
 /*-------------------------------------------------------------------------*/
 
 static inline struct musb *dev_to_musb(struct device *dev)
@@ -644,8 +644,7 @@ b_host:
 				musb_writeb(mbase, MUSB_DEVCTL, 0);
 			}
 		} else if (is_peripheral_capable()) {
-			printk(KERN_INFO "MUSB BUS RESET as %s\n",
-				otg_state_string(musb));
+			DBG(1, "BUS RESET as %s\n", otg_state_string(musb));
 			switch (musb->xceiv->state) {
 #ifdef CONFIG_USB_OTG
 			case OTG_STATE_A_SUSPEND:
@@ -892,6 +891,7 @@ void musb_start(struct musb *musb)
 
 	/* put into basic highspeed mode and start session */
 	musb_writeb(regs, MUSB_POWER, MUSB_POWER_ISOUPDATE
+						| MUSB_POWER_SOFTCONN
 						| MUSB_POWER_HSENAB
 						/* ENSUSPEND wedges tusb */
 						/* | MUSB_POWER_ENSUSPEND */
@@ -1084,13 +1084,13 @@ static struct fifo_cfg __initdata mode_4_cfg[] = {
 { .hw_ep_num =  8, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num =  9, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num =  9, .style = FIFO_RX,   .maxpacket = 512, },
-{ .hw_ep_num = 10, .style = FIFO_TX,   .maxpacket = 512, },
-{ .hw_ep_num = 10, .style = FIFO_RX,   .maxpacket = 512, },
-{ .hw_ep_num = 11, .style = FIFO_TX,   .maxpacket = 512, },
-{ .hw_ep_num = 11, .style = FIFO_RX,   .maxpacket = 512, },
-{ .hw_ep_num = 12, .style = FIFO_TX,   .maxpacket = 512, },
-{ .hw_ep_num = 12, .style = FIFO_RX,   .maxpacket = 512, },
-{ .hw_ep_num = 13, .style = FIFO_RXTX, .maxpacket = 1024, },
+{ .hw_ep_num = 10, .style = FIFO_TX,   .maxpacket = 256, },
+{ .hw_ep_num = 10, .style = FIFO_RX,   .maxpacket = 64, },
+{ .hw_ep_num = 11, .style = FIFO_TX,   .maxpacket = 256, },
+{ .hw_ep_num = 11, .style = FIFO_RX,   .maxpacket = 64, },
+{ .hw_ep_num = 12, .style = FIFO_TX,   .maxpacket = 256, },
+{ .hw_ep_num = 12, .style = FIFO_RX,   .maxpacket = 64, },
+{ .hw_ep_num = 13, .style = FIFO_RXTX, .maxpacket = 4096, },
 { .hw_ep_num = 14, .style = FIFO_RXTX, .maxpacket = 1024, },
 { .hw_ep_num = 15, .style = FIFO_RXTX, .maxpacket = 1024, },
 };
@@ -1919,8 +1919,6 @@ bad_config:
 	if (!musb)
 		return -ENOMEM;
 
-	g_musb = musb;
-
 	spin_lock_init(&musb->lock);
 	musb->board_mode = plat->mode;
 	musb->board_set_power = plat->set_power;
@@ -2120,8 +2118,7 @@ static u64	*orig_dma_mask;
 static int __init musb_probe(struct platform_device *pdev)
 {
 	struct device	*dev = &pdev->dev;
-	int		irq = platform_get_irq_byname(pdev, "mc");
-	int		status;
+	int		irq = platform_get_irq(pdev, 0);
 	struct resource	*iomem;
 	void __iomem	*base;
 
@@ -2129,7 +2126,7 @@ static int __init musb_probe(struct platform_device *pdev)
 	if (!iomem || irq == 0)
 		return -ENODEV;
 
-	base = ioremap(iomem->start, resource_size(iomem));
+	base = ioremap(iomem->start, iomem->end - iomem->start + 1);
 	if (!base) {
 		dev_err(dev, "ioremap failed\n");
 		return -ENOMEM;
@@ -2139,12 +2136,7 @@ static int __init musb_probe(struct platform_device *pdev)
 	/* clobbered by use_dma=n */
 	orig_dma_mask = dev->dma_mask;
 #endif
-
-	status = musb_init_controller(dev, irq, base);
-	if (status < 0)
-		iounmap(base);
-
-	return status;
+	return musb_init_controller(dev, irq, base);
 }
 
 static int __devexit musb_remove(struct platform_device *pdev)
@@ -2222,7 +2214,7 @@ static int musb_resume_noirq(struct device *dev)
 	return 0;
 }
 
-static struct dev_pm_ops musb_dev_pm_ops = {
+static const struct dev_pm_ops musb_dev_pm_ops = {
 	.suspend	= musb_suspend,
 	.resume_noirq	= musb_resume_noirq,
 };

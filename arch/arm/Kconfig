@@ -10,23 +10,14 @@ config ARM
 	default y
 	select HAVE_AOUT
 	select HAVE_IDE
-	select HAVE_MEMBLOCK
 	select RTC_LIB
 	select SYS_SUPPORTS_APM_EMULATION
-	select GENERIC_ATOMIC64 if (!CPU_32v6K)
 	select HAVE_OPROFILE
 	select HAVE_ARCH_KGDB
 	select HAVE_KPROBES if (!XIP_KERNEL)
 	select HAVE_KRETPROBES if (HAVE_KPROBES)
-	select HAVE_LTT_DUMP_TABLES
-#	select HAVE_FUNCTION_TRACER if (!XIP_KERNEL)
-#	select HAVE_FUNCTION_GRAPH_TRACER if (!XIP_KERNEL)
-#	select HAVE_FTRACE_MCOUNT_RECORD if (!XIP_KERNEL)
-#	select HAVE_DYNAMIC_FTRACE if (!XIP_KERNEL && !THUMB2_KERNEL)
+	select HAVE_FUNCTION_TRACER if (!XIP_KERNEL)
 	select HAVE_GENERIC_DMA_COHERENT
-	select HAVE_KERNEL_GZIP
-	select HAVE_KERNEL_LZO
-	select HAVE_KERNEL_LZMA
 	help
 	  The ARM series is a line of low-power-consumption RISC chip designs
 	  licensed by ARM Ltd and targeted at embedded applications and
@@ -124,9 +115,10 @@ config GENERIC_LOCKBREAK
 
 config RWSEM_GENERIC_SPINLOCK
 	bool
+	default y
 
 config RWSEM_XCHGADD_ALGORITHM
-	def_bool y
+	bool
 
 config ARCH_HAS_ILOG2_U32
 	bool
@@ -166,31 +158,6 @@ config ARCH_MTD_XIP
 
 config GENERIC_HARDIRQS_NO__DO_IRQ
 	def_bool y
-
-config ARM_OF
-	bool "Support for open firmware device tree (ARM port)"
-	default n
-
-config OF
-	bool "Support for open firmware device tree"
-	depends on ARM_OF
-	default n
-
-config PROC_DEVICETREE
-	bool "Support for device tree in /proc"
-	depends on PROC_FS && OF
-	help
-           This option adds a device-tree directory under /proc which contains
-           an image of the device tree that the kernel copies from Open
-           Firmware or other boot firmware. If unsure, say Y here.
-
-config BOOTINFO
-	bool "Boot Information Feature"
-	default n
-	help
-           This feature provides access to certain boot information
-           from both kernel context (via function call) and user
-           context (via /proc/bootinfo).
 
 if OPROFILE
 
@@ -326,7 +293,6 @@ config ARCH_EP93XX
 	select COMMON_CLKDEV
 	select ARCH_REQUIRE_GPIOLIB
 	select ARCH_HAS_HOLES_MEMORYMODEL
-	select PROC_SOC_INFO
 	help
 	  This enables support for the Cirrus EP93xx series of CPUs.
 
@@ -466,6 +432,17 @@ config ARCH_L7200
 
 	  If you have any questions or comments about the Linux kernel port
 	  to this board, send e-mail to <sjhill@cotw.com>.
+
+config ARCH_DOVE
+	bool "Marvell Dove"
+	select PCI
+	select GENERIC_GPIO
+	select ARCH_REQUIRE_GPIOLIB
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	select PLAT_ORION
+	help
+	  Support for the Marvell Dove SoC 88AP510
 
 config ARCH_KIRKWOOD
 	bool "Marvell Kirkwood"
@@ -626,6 +603,7 @@ config ARCH_SA1100
 	select ARCH_SPARSEMEM_ENABLE
 	select ARCH_MTD_XIP
 	select ARCH_HAS_CPUFREQ
+	select CPU_FREQ
 	select GENERIC_GPIO
 	select GENERIC_TIME
 	select GENERIC_CLOCKEVENTS
@@ -675,6 +653,7 @@ config ARCH_SHARK
 config ARCH_LH7A40X
 	bool "Sharp LH7A40X"
 	select CPU_ARM922T
+	select ARCH_DISCONTIGMEM_ENABLE if !LH7A40X_CONTIGMEM
 	select ARCH_SPARSEMEM_ENABLE if !LH7A40X_CONTIGMEM
 	help
 	  Say Y here for systems based on one of the Sharp LH7A40X
@@ -720,7 +699,6 @@ config ARCH_OMAP
 	select ARCH_HAS_CPUFREQ
 	select GENERIC_TIME
 	select GENERIC_CLOCKEVENTS
-	select ARCH_HAS_HOLES_MEMORYMODEL
 	help
 	  Support for TI's OMAP platform (OMAP1 and OMAP2).
 
@@ -735,6 +713,16 @@ config ARCH_BCMRING
 	select ARCH_WANT_OPTIONAL_GPIOLIB
 	help
 	  Support for Broadcom's BCMRing platform.
+
+config ARCH_U8500
+	bool "ST-Ericsson U8500 Series"
+	select CPU_V7
+	select ARM_AMBA
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
+	select COMMON_CLKDEV
+	help
+	  Support for ST-Ericsson's Ux500 architecture
 
 endchoice
 
@@ -781,6 +769,9 @@ source "arch/arm/mach-orion5x/Kconfig"
 
 source "arch/arm/mach-kirkwood/Kconfig"
 
+source "arch/arm/mach-dove/Kconfig"
+
+source "arch/arm/plat-samsung/Kconfig"
 source "arch/arm/plat-s3c24xx/Kconfig"
 source "arch/arm/plat-s3c64xx/Kconfig"
 source "arch/arm/plat-s3c/Kconfig"
@@ -821,6 +812,7 @@ source "arch/arm/mach-at91/Kconfig"
 source "arch/arm/plat-mxc/Kconfig"
 
 source "arch/arm/mach-nomadik/Kconfig"
+source "arch/arm/plat-nomadik/Kconfig"
 
 source "arch/arm/mach-netx/Kconfig"
 
@@ -838,12 +830,16 @@ source "arch/arm/mach-w90x900/Kconfig"
 
 source "arch/arm/mach-bcmring/Kconfig"
 
+source "arch/arm/mach-ux500/Kconfig"
+
 # Definitions to make life easier
 config ARCH_ACORN
 	bool
 
 config PLAT_IOP
 	bool
+	select GENERIC_CLOCKEVENTS
+	select GENERIC_TIME
 
 config PLAT_ORION
 	bool
@@ -866,11 +862,6 @@ config XSCALE_PMU
 	bool
 	depends on CPU_XSCALE && !XSCALE_PMU_TIMER
 	default y
-
-config CPU_HAS_PMU
-	depends on CPU_V6 || CPU_V7 || XSCALE_PMU
-	default y
-	bool
 
 if !MMU
 source "arch/arm/Kconfig-nommu"
@@ -900,42 +891,6 @@ config ARM_ERRATA_430973
 	  and also flushes the branch target cache at every context switch.
 	  Note that setting specific bits in the ACTLR register may not be
 	  available in non-secure mode.
-
-config ARM_ERRATA_621766
-	bool "ARM errata: Processor deadlock when executing a sequence of NEON or vfp load"
-	depends on CPU_V7
-	help
-	  This option enables the workaround for the 621766 Cortex-A8
-	  (r1p*) erratum. When a sequence on Neon
-	  load instructions is intermixed with several branches, some
-	  of which are mispredicted, it is possible for the processor to
-	  deadlock due to Neon loads on the speculative path not being
-	  properly flushed from the Neon load queue.
-
-	  The workaround for this erratum is to force all NEON loads to be
-	  cached in the L1 cache by setting the L1NEON bit (bit 5) in the
-	  CP15 Auxiliary Control Register. The measured performance impact
-	  of this for Neon applications has been on the order of a few percent (2-3%),
-	  but could be more than that for an application that makes heavy
-	  use of memory streaming. For such applications PLD instructions
-	  could be used to mitigate the performance impact. However need to
-	  consider workaround for ARM_ERRATA_725233 when using PLD.
-
-config ARM_ERRATA_725233
-	bool "ARM errata: Processor deadlock PLD data forwarding enabled"
-	depends on CPU_V7
-	help
-	  This option enables the workaround for the 725233 Cortex-A8 (r1p*).
-	  If a PLD instruction is executed and causes a linefill to occur to
-	  the L2 cache, and a subsequent Neon or VFP load instruction is done
-	  to an address that falls within the same cache line, it is possible
-	  for processor deadlock to occur. The deadlock occurs only in a particular
-	  timing corner case that can happen when the VLD instruction execution
-	  occurs prior to the PLD data being returned on the AXI bus, and there
-	  is a Neon resource stall preventing instruction issue during the same
-	  time window. There is a simple and straightforward workaround for this
-	  issue which is to disable the PLD data forwarding feature, bit [27] in
-	  the L2 Auxiliary Control Register
 
 config ARM_ERRATA_458693
 	bool "ARM errata: Processor deadlock when a false hazard is created"
@@ -1030,10 +985,10 @@ source "kernel/time/Kconfig"
 config SMP
 	bool "Symmetric Multi-Processing (EXPERIMENTAL)"
 	depends on EXPERIMENTAL && (REALVIEW_EB_ARM11MP || REALVIEW_EB_A9MP ||\
-		 MACH_REALVIEW_PB11MP || MACH_REALVIEW_PBX || ARCH_OMAP4)
+		 MACH_REALVIEW_PB11MP || MACH_REALVIEW_PBX || ARCH_OMAP4 || ARCH_U8500)
 	depends on GENERIC_CLOCKEVENTS
 	select USE_GENERIC_SMP_HELPERS
-	select HAVE_ARM_SCU if (ARCH_REALVIEW || ARCH_OMAP4)
+	select HAVE_ARM_SCU if (ARCH_REALVIEW || ARCH_OMAP4 || ARCH_U8500)
 	help
 	  This enables support for systems with more than one CPU. If you have
 	  a system with only one CPU, like most personal computers, say N. If
@@ -1102,9 +1057,9 @@ config HOTPLUG_CPU
 config LOCAL_TIMERS
 	bool "Use local timer interrupts"
 	depends on SMP && (REALVIEW_EB_ARM11MP || MACH_REALVIEW_PB11MP || \
-		REALVIEW_EB_A9MP || MACH_REALVIEW_PBX || ARCH_OMAP4)
+		REALVIEW_EB_A9MP || MACH_REALVIEW_PBX || ARCH_OMAP4 || ARCH_U8500)
 	default y
-	select HAVE_ARM_TWD if (ARCH_REALVIEW || ARCH_OMAP4)
+	select HAVE_ARM_TWD if (ARCH_REALVIEW || ARCH_OMAP4 || ARCH_U8500)
 	help
 	  Enable support for local timers on SMP platforms, rather then the
 	  legacy IPI broadcast method.  Local timers allows the system
@@ -1171,6 +1126,10 @@ config OABI_COMPAT
 config ARCH_HAS_HOLES_MEMORYMODEL
 	bool
 
+# Discontigmem is deprecated
+config ARCH_DISCONTIGMEM_ENABLE
+	bool
+
 config ARCH_SPARSEMEM_ENABLE
 	bool
 
@@ -1178,7 +1137,13 @@ config ARCH_SPARSEMEM_DEFAULT
 	def_bool ARCH_SPARSEMEM_ENABLE
 
 config ARCH_SELECT_MEMORY_MODEL
-	def_bool ARCH_SPARSEMEM_ENABLE
+	def_bool ARCH_DISCONTIGMEM_ENABLE && ARCH_SPARSEMEM_ENABLE
+
+config NODES_SHIFT
+	int
+	default "4" if ARCH_LH7A40X
+	default "2"
+	depends on NEED_MULTIPLE_NODES
 
 config HIGHMEM
 	bool "High Memory Support (EXPERIMENTAL)"
@@ -1201,14 +1166,6 @@ config HIGHPTE
 	bool "Allocate 2nd-level pagetables from highmem"
 	depends on HIGHMEM
 	depends on !OUTER_CACHE
-
-config HW_PERF_EVENTS
-	bool "Enable hardware performance counter support for perf events"
-	depends on PERF_EVENTS && CPU_HAS_PMU && CPU_V6
-	default y
-	help
-	  Enable hardware performance counter support for perf events. If
-	  disabled, perf events will use software events only.
 
 source "mm/Kconfig"
 
@@ -1403,13 +1360,9 @@ source "drivers/cpufreq/Kconfig"
 
 config CPU_FREQ_SA1100
 	bool
-	depends on CPU_FREQ && (SA1100_H3100 || SA1100_H3600 || SA1100_LART || SA1100_PLEB || SA1100_BADGE4 || SA1100_HACKKIT)
-	default y
 
 config CPU_FREQ_SA1110
 	bool
-	depends on CPU_FREQ && (SA1100_ASSABET || SA1100_CERF || SA1100_PT_SYSTEM3)
-	default y
 
 config CPU_FREQ_INTEGRATOR
 	tristate "CPUfreq driver for ARM Integrator CPUs"
@@ -1550,13 +1503,6 @@ config NEON
 	  Say Y to include support code for NEON, the ARMv7 Advanced SIMD
 	  Extension.
 
-config KERNEL_MODE_NEON
-	bool "Support for NEON in kernel mode"
-	default n
-	depends on NEON
-	help
-	  Say Y to include support for NEON in kernel mode.
-
 endmenu
 
 menu "Userspace binary formats"
@@ -1587,12 +1533,6 @@ endmenu
 source "net/Kconfig"
 
 source "drivers/Kconfig"
-
-if ARCH_OMAP
-source "drivers/cbus/Kconfig"
-endif
-
-source "drivers/dsp/bridge/Kconfig"
 
 source "fs/Kconfig"
 

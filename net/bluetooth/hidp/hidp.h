@@ -155,9 +155,6 @@ struct hidp_session {
 	struct sk_buff_head intr_transmit;
 
 	struct hidp_connadd_req *req;
-
-	unsigned char *datc_accum_buf;
-	size_t datc_accum_len;
 };
 
 static inline void hidp_schedule(struct hidp_session *session)

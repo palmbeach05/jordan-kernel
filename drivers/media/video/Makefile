@@ -75,8 +75,11 @@ obj-$(CONFIG_VIDEO_MT9V011) += mt9v011.o
 obj-$(CONFIG_SOC_CAMERA_MT9M001)	+= mt9m001.o
 obj-$(CONFIG_SOC_CAMERA_MT9M111)	+= mt9m111.o
 obj-$(CONFIG_SOC_CAMERA_MT9T031)	+= mt9t031.o
+obj-$(CONFIG_SOC_CAMERA_MT9T112)	+= mt9t112.o
 obj-$(CONFIG_SOC_CAMERA_MT9V022)	+= mt9v022.o
 obj-$(CONFIG_SOC_CAMERA_OV772X)		+= ov772x.o
+obj-$(CONFIG_SOC_CAMERA_OV9640)		+= ov9640.o
+obj-$(CONFIG_SOC_CAMERA_RJ54N1)		+= rj54n1cb0c.o
 obj-$(CONFIG_SOC_CAMERA_TW9910)		+= tw9910.o
 
 # And now the v4l2 drivers:
@@ -118,18 +121,6 @@ obj-$(CONFIG_VIDEO_CX2341X) += cx2341x.o
 
 obj-$(CONFIG_VIDEO_CAFE_CCIC) += cafe_ccic.o
 
-obj-$(CONFIG_VIDEO_OMAP3) += omap34xxcam.o
-
-obj-$(CONFIG_VIDEO_TCM825X) += tcm825x.o
-obj-$(CONFIG_VIDEO_MT9P012)     += mt9p012.o
-obj-$(CONFIG_VIDEO_OV5650)     += ov5650.o
-obj-$(CONFIG_VIDEO_OV8810)     += ov8810.o
-obj-$(CONFIG_VIDEO_MIPI_DLI_TEST) += mipi_dli.o
-obj-$(CONFIG_VIDEO_OMAP3_HP3A) += hp3a/
-obj-$(CONFIG_VIDEO_OMAP3_HPLENS) += hplens.o
-
-obj-$(CONFIG_VIDEO_IMX046)      += imx046.o
-obj-$(CONFIG_VIDEO_LV8093)      += lv8093.o
 obj-$(CONFIG_USB_DABUSB)        += dabusb.o
 obj-$(CONFIG_USB_OV511)         += ov511.o
 obj-$(CONFIG_USB_SE401)         += se401.o
@@ -159,18 +150,8 @@ obj-$(CONFIG_VIDEO_VIVI) += vivi.o
 obj-$(CONFIG_VIDEO_CX23885) += cx23885/
 
 obj-$(CONFIG_VIDEO_OMAP2)		+= omap2cam.o
-obj-$(CONFIG_SOC_CAMERA)		+= soc_camera.o
-obj-$(CONFIG_VIDEO_OMAP3)		+= isp/
-obj-$(CONFIG_VIDEO_OLDOMAP3) += oldomap34xxcam.o oldisp/
-obj-$(CONFIG_VIDEO_OMAP_VIDEOOUT) += omap-vout/
-obj-$(CONFIG_SOC_CAMERA)	+= soc_camera.o
-obj-$(CONFIG_SOC_CAMERA_MT9M001)	+= mt9m001.o
-obj-$(CONFIG_SOC_CAMERA_MT9M111)	+= mt9m111.o
-obj-$(CONFIG_SOC_CAMERA_MT9T031)	+= mt9t031.o
-obj-$(CONFIG_SOC_CAMERA_MT9V022)	+= mt9v022.o
-obj-$(CONFIG_SOC_CAMERA_OV772X)		+= ov772x.o
+obj-$(CONFIG_SOC_CAMERA)		+= soc_camera.o soc_mediabus.o
 obj-$(CONFIG_SOC_CAMERA_PLATFORM)	+= soc_camera_platform.o
-obj-$(CONFIG_VIDEO_CAM_ISE)     += camise.o
 # soc-camera host drivers have to be linked after camera drivers
 obj-$(CONFIG_VIDEO_MX1)			+= mx1_camera.o
 obj-$(CONFIG_VIDEO_MX3)			+= mx3_camera.o
@@ -191,9 +172,3 @@ obj-$(CONFIG_ARCH_DAVINCI)	+= davinci/
 EXTRA_CFLAGS += -Idrivers/media/dvb/dvb-core
 EXTRA_CFLAGS += -Idrivers/media/dvb/frontends
 EXTRA_CFLAGS += -Idrivers/media/common/tuners
-
-ifdef CONFIG_VIDEO_OMAP3_HP3A
-EXTRA_CFLAGS += -Idrivers/media/video/hp3a
-endif
-
-obj-$(CONFIG_HDMI_TDA19989) += tda19989.o

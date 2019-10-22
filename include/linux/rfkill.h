@@ -35,6 +35,8 @@
  * @RFKILL_TYPE_UWB: switch is on a ultra wideband device.
  * @RFKILL_TYPE_WIMAX: switch is on a WiMAX device.
  * @RFKILL_TYPE_WWAN: switch is on a wireless WAN device.
+ * @RFKILL_TYPE_GPS: switch is on a GPS device.
+ * @RFKILL_TYPE_FM: switch is on a FM radio device.
  * @NUM_RFKILL_TYPES: number of defined rfkill types
  */
 enum rfkill_type {
@@ -46,7 +48,6 @@ enum rfkill_type {
 	RFKILL_TYPE_WWAN,
 	RFKILL_TYPE_GPS,
 	RFKILL_TYPE_FM,
-	RFKILL_TYPE_PWR_CTL,
 	NUM_RFKILL_TYPES,
 };
 

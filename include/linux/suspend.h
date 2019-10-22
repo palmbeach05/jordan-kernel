@@ -303,10 +303,6 @@ static inline int unregister_pm_notifier(struct notifier_block *nb)
 
 extern struct mutex pm_mutex;
 
-#ifdef CONFIG_PM_DEEPSLEEP
-extern int get_deepsleep_mode(void);
-#endif
-
 #ifndef CONFIG_HIBERNATION
 static inline void register_nosave_region(unsigned long b, unsigned long e)
 {

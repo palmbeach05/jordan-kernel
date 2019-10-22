@@ -287,14 +287,17 @@ static int ide_gd_media_changed(struct gendisk *disk)
 	return ret;
 }
 
-static void ide_gd_unlock_native_capacity(struct gendisk *disk)
+static unsigned long long ide_gd_set_capacity(struct gendisk *disk,
+					      unsigned long long capacity)
 {
 	struct ide_disk_obj *idkp = ide_drv_g(disk, ide_disk_obj);
 	ide_drive_t *drive = idkp->drive;
 	const struct ide_disk_ops *disk_ops = drive->disk_ops;
 
-	if (disk_ops->unlock_native_capacity)
-		disk_ops->unlock_native_capacity(drive);
+	if (disk_ops->set_capacity)
+		return disk_ops->set_capacity(drive, capacity);
+
+	return drive->capacity64;
 }
 
 static int ide_gd_revalidate_disk(struct gendisk *disk)
@@ -325,7 +328,7 @@ static const struct block_device_operations ide_gd_ops = {
 	.locked_ioctl		= ide_gd_ioctl,
 	.getgeo			= ide_gd_getgeo,
 	.media_changed		= ide_gd_media_changed,
-	.unlock_native_capacity	= ide_gd_unlock_native_capacity,
+	.set_capacity		= ide_gd_set_capacity,
 	.revalidate_disk	= ide_gd_revalidate_disk
 };
 

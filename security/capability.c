@@ -12,26 +12,6 @@
 
 #include <linux/security.h>
 
-static int cap_binder_set_context_mgr(struct task_struct *mgr)
-{
-	return 0;
-}
-
-static int cap_binder_transaction(struct task_struct *from, struct task_struct *to)
-{
-	return 0;
-}
-
-static int cap_binder_transfer_binder(struct task_struct *from, struct task_struct *to)
-{
-	return 0;
-}
-
-static int cap_binder_transfer_file(struct task_struct *from, struct task_struct *to, struct file *file)
-{
-	return 0;
-}
-
 static int cap_acct(struct file *file)
 {
 	return 0;
@@ -325,6 +305,22 @@ static int cap_path_rename(struct path *old_path, struct dentry *old_dentry,
 
 static int cap_path_truncate(struct path *path, loff_t length,
 			     unsigned int time_attrs)
+{
+	return 0;
+}
+
+static int cap_path_chmod(struct dentry *dentry, struct vfsmount *mnt,
+			  mode_t mode)
+{
+	return 0;
+}
+
+static int cap_path_chown(struct path *path, uid_t uid, gid_t gid)
+{
+	return 0;
+}
+
+static int cap_path_chroot(struct path *root)
 {
 	return 0;
 }
@@ -925,10 +921,6 @@ struct security_operations default_security_ops = {
 
 void security_fixup_ops(struct security_operations *ops)
 {
-	set_to_cap_if_null(ops, binder_set_context_mgr);
-	set_to_cap_if_null(ops, binder_transaction);
-	set_to_cap_if_null(ops, binder_transfer_binder);
-	set_to_cap_if_null(ops, binder_transfer_file);
 	set_to_cap_if_null(ops, ptrace_access_check);
 	set_to_cap_if_null(ops, ptrace_traceme);
 	set_to_cap_if_null(ops, capget);
@@ -1001,6 +993,9 @@ void security_fixup_ops(struct security_operations *ops)
 	set_to_cap_if_null(ops, path_link);
 	set_to_cap_if_null(ops, path_rename);
 	set_to_cap_if_null(ops, path_truncate);
+	set_to_cap_if_null(ops, path_chmod);
+	set_to_cap_if_null(ops, path_chown);
+	set_to_cap_if_null(ops, path_chroot);
 #endif
 	set_to_cap_if_null(ops, file_permission);
 	set_to_cap_if_null(ops, file_alloc_security);

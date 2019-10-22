@@ -30,7 +30,6 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/io.h>
-#include <trace/trap.h>
 
 #ifdef CONFIG_EISA
 #include <linux/ioport.h>
@@ -52,7 +51,6 @@
 #include <asm/atomic.h>
 #include <asm/system.h>
 #include <asm/traps.h>
-#include <asm/unistd.h>
 #include <asm/desc.h>
 #include <asm/i387.h>
 #include <asm/mce.h>
@@ -77,20 +75,10 @@ char ignore_fpu_irq;
  * F0 0F bug workaround.
  */
 gate_desc idt_table[NR_VECTORS] __page_aligned_data = { { { { 0, 0 } } }, };
-
-extern unsigned long sys_call_table[];
-extern unsigned long syscall_table_size;
-
 #endif
 
 DECLARE_BITMAP(used_vectors, NR_VECTORS);
 EXPORT_SYMBOL_GPL(used_vectors);
-
-/*
- * Also used in arch/x86/mm/fault.c.
- */
-DEFINE_TRACE(trap_entry);
-DEFINE_TRACE(trap_exit);
 
 static int ignore_nmis;
 
@@ -134,8 +122,6 @@ do_trap(int trapnr, int signr, char *str, struct pt_regs *regs,
 	long error_code, siginfo_t *info)
 {
 	struct task_struct *tsk = current;
-
-	trace_trap_entry(regs, trapnr);
 
 #ifdef CONFIG_X86_32
 	if (regs->flags & X86_VM_MASK) {
@@ -183,7 +169,7 @@ trap_signal:
 		force_sig_info(signr, info, tsk);
 	else
 		force_sig(signr, tsk);
-	goto end;
+	return;
 
 kernel_trap:
 	if (!fixup_exception(regs)) {
@@ -191,17 +177,15 @@ kernel_trap:
 		tsk->thread.trap_no = trapnr;
 		die(str, regs, error_code);
 	}
-	goto end;
+	return;
 
 #ifdef CONFIG_X86_32
 vm86_trap:
 	if (handle_vm86_trap((struct kernel_vm86_regs *) regs,
 						error_code, trapnr))
 		goto trap_signal;
-	goto end;
+	return;
 #endif
-end:
-	trace_trap_exit();
 }
 
 #define DO_ERROR(trapnr, signr, str, name)				\
@@ -302,9 +286,7 @@ do_general_protection(struct pt_regs *regs, long error_code)
 		printk("\n");
 	}
 
-	trace_trap_entry(regs, 13);
 	force_sig(SIGSEGV, tsk);
-	trace_trap_exit();
 	return;
 
 #ifdef CONFIG_X86_32
@@ -414,29 +396,27 @@ static notrace __kprobes void default_do_nmi(struct pt_regs *regs)
 	if (!cpu)
 		reason = get_nmi_reason();
 
-	trace_trap_entry(regs, 2);
-
 	if (!(reason & 0xc0)) {
 		if (notify_die(DIE_NMI_IPI, "nmi_ipi", regs, reason, 2, SIGINT)
 								== NOTIFY_STOP)
-			goto end;
+			return;
 #ifdef CONFIG_X86_LOCAL_APIC
 		/*
 		 * Ok, so this is none of the documented NMI sources,
 		 * so it must be the NMI watchdog.
 		 */
 		if (nmi_watchdog_tick(regs, reason))
-			goto end;
+			return;
 		if (!do_nmi_callback(regs, cpu))
 			unknown_nmi_error(reason, regs);
 #else
 		unknown_nmi_error(reason, regs);
 #endif
 
-		goto end;
+		return;
 	}
 	if (notify_die(DIE_NMI, "nmi", regs, reason, 2, SIGINT) == NOTIFY_STOP)
-		goto end;
+		return;
 
 	/* AK: following checks seem to be broken on modern chipsets. FIXME */
 	if (reason & 0x80)
@@ -450,8 +430,6 @@ static notrace __kprobes void default_do_nmi(struct pt_regs *regs)
 	 */
 	reassert_nmi();
 #endif
-end:
-	trace_trap_exit();
 }
 
 dotraplinkage notrace __kprobes void
@@ -482,7 +460,7 @@ void restart_nmi(void)
 /* May run on IST stack. */
 dotraplinkage void __kprobes do_int3(struct pt_regs *regs, long error_code)
 {
-#if (defined(CONFIG_KPROBES) || defined(USE_IMMEDIATE))
+#ifdef CONFIG_KPROBES
 	if (notify_die(DIE_INT3, "int3", regs, error_code, 3, SIGTRAP)
 			== NOTIFY_STOP)
 		return;
@@ -551,81 +529,56 @@ asmlinkage __kprobes struct pt_regs *sync_regs(struct pt_regs *eregs)
 dotraplinkage void __kprobes do_debug(struct pt_regs *regs, long error_code)
 {
 	struct task_struct *tsk = current;
-	unsigned long condition;
+	unsigned long dr6;
 	int si_code;
 
-	get_debugreg(condition, 6);
+	get_debugreg(dr6, 6);
 
 	/* Catch kmemcheck conditions first of all! */
-	if (condition & DR_STEP && kmemcheck_trap(regs))
+	if ((dr6 & DR_STEP) && kmemcheck_trap(regs))
 		return;
 
+	/* DR6 may or may not be cleared by the CPU */
+	set_debugreg(0, 6);
 	/*
 	 * The processor cleared BTF, so don't mark that we need it set.
 	 */
 	clear_tsk_thread_flag(tsk, TIF_DEBUGCTLMSR);
 	tsk->thread.debugctlmsr = 0;
 
-	if (notify_die(DIE_DEBUG, "debug", regs, condition, error_code,
-						SIGTRAP) == NOTIFY_STOP)
+	/* Store the virtualized DR6 value */
+	tsk->thread.debugreg6 = dr6;
+
+	if (notify_die(DIE_DEBUG, "debug", regs, PTR_ERR(&dr6), error_code,
+							SIGTRAP) == NOTIFY_STOP)
 		return;
 
 	/* It's safe to allow irq's after DR6 has been saved */
 	preempt_conditional_sti(regs);
 
-	/* Mask out spurious debug traps due to lazy DR7 setting */
-	if (condition & (DR_TRAP0|DR_TRAP1|DR_TRAP2|DR_TRAP3)) {
-		if (!tsk->thread.debugreg7)
-			goto clear_dr7;
+	if (regs->flags & X86_VM_MASK) {
+		handle_vm86_trap((struct kernel_vm86_regs *) regs,
+				error_code, 1);
+		return;
 	}
 
-#ifdef CONFIG_X86_32
-	if (regs->flags & X86_VM_MASK)
-		goto debug_vm86;
-#endif
-
-	/* Save debug status register where ptrace can see it */
-	tsk->thread.debugreg6 = condition;
-
 	/*
-	 * Single-stepping through TF: make sure we ignore any events in
-	 * kernel space (but re-enable TF when returning to user mode).
+	 * Single-stepping through system calls: ignore any exceptions in
+	 * kernel space, but re-enable TF when returning to user mode.
+	 *
+	 * We already checked v86 mode above, so we can check for kernel mode
+	 * by just checking the CPL of CS.
 	 */
-	if (condition & DR_STEP) {
-		if (!user_mode(regs))
-			goto clear_TF_reenable;
+	if ((dr6 & DR_STEP) && !user_mode(regs)) {
+		tsk->thread.debugreg6 &= ~DR_STEP;
+		set_tsk_thread_flag(tsk, TIF_SINGLESTEP);
+		regs->flags &= ~X86_EFLAGS_TF;
 	}
-
-	si_code = get_si_code(condition);
-	/* Ok, finally something we can handle */
-	trace_trap_entry(regs, 1);
-	send_sigtrap(tsk, regs, error_code, si_code);
-	trace_trap_exit();
-
-	/*
-	 * Disable additional traps. They'll be re-enabled when
-	 * the signal is delivered.
-	 */
-clear_dr7:
-	set_debugreg(0, 7);
+	si_code = get_si_code(tsk->thread.debugreg6);
+	if (tsk->thread.debugreg6 & (DR_STEP | DR_TRAP_BITS))
+		send_sigtrap(tsk, regs, error_code, si_code);
 	preempt_conditional_cli(regs);
-	return;
 
-#ifdef CONFIG_X86_32
-debug_vm86:
-	/* reenable preemption: handle_vm86_trap() might sleep */
-	dec_preempt_count();
-	trace_trap_entry(regs, 1);
-	handle_vm86_trap((struct kernel_vm86_regs *) regs, error_code, 1);
-	trace_trap_exit();
-	conditional_cli(regs);
-	return;
-#endif
-
-clear_TF_reenable:
-	set_tsk_thread_flag(tsk, TIF_SINGLESTEP);
-	regs->flags &= ~X86_EFLAGS_TF;
-	preempt_conditional_cli(regs);
 	return;
 }
 
@@ -641,22 +594,6 @@ static int kernel_math_error(struct pt_regs *regs, const char *str, int trapnr)
 	die(str, regs, 0);
 	return 0;
 }
-#endif
-
-#ifdef CONFIG_X86_32
-void ltt_dump_sys_call_table(void *call_data)
-{
-	int i;
-	char namebuf[KSYM_NAME_LEN];
-
-	for (i = 0; i < NR_syscalls; i++) {
-		sprint_symbol(namebuf, sys_call_table[i]);
-		__trace_mark(0, syscall_state, sys_call_table, call_data,
-			"id %d address %p symbol %s",
-			i, (void*)sys_call_table[i], namebuf);
-	}
-}
-EXPORT_SYMBOL_GPL(ltt_dump_sys_call_table);
 #endif
 
 /*
@@ -818,13 +755,11 @@ do_simd_coprocessor_error(struct pt_regs *regs, long error_code)
 dotraplinkage void
 do_spurious_interrupt_bug(struct pt_regs *regs, long error_code)
 {
-	trace_trap_entry(regs, 16);
 	conditional_sti(regs);
 #if 0
 	/* No need to warn about this any longer. */
 	printk(KERN_INFO "Ignoring P6 Local APIC Spurious Interrupt Bug...\n");
 #endif
-	trace_trap_exit();
 }
 
 asmlinkage void __attribute__((weak)) smp_thermal_interrupt(void)
@@ -856,21 +791,6 @@ void __math_state_restore(void)
 	thread->status |= TS_USEDFPU;	/* So we fnsave on switch_to() */
 	tsk->fpu_counter++;
 }
-
-void ltt_dump_idt_table(void *call_data)
-{
-	int i;
-	char namebuf[KSYM_NAME_LEN];
-
-	for (i = 0; i < IDT_ENTRIES; i++) {
-		unsigned long address = gate_offset(idt_table[i]);
-		sprint_symbol(namebuf, address);
-		__trace_mark(0, irq_state, idt_table, call_data,
-			"irq %d address %p symbol %s",
-			i, (void *)address, namebuf);
-	}
-}
-EXPORT_SYMBOL_GPL(ltt_dump_idt_table);
 
 /*
  * 'math_state_restore()' saves the current math information in the

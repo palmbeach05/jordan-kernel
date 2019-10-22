@@ -37,7 +37,6 @@
 #include <linux/kernel_stat.h>
 #include <linux/personality.h>
 #include <linux/random.h>
-#include <trace/sched.h>
 
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
@@ -54,8 +53,6 @@
 #endif
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
-
-DEFINE_TRACE(sched_kthread_create);
 
 extern unsigned long _get_SP(void);
 
@@ -550,17 +547,6 @@ void show_regs(struct pt_regs * regs)
 		show_instructions(regs);
 }
 
-long original_kernel_thread(int (*fn) (void *), void *arg, unsigned long flags);
-
-long kernel_thread(int (fn) (void *), void *arg, unsigned long flags)
-{
-	long retval;
-
-	retval = original_kernel_thread(fn, arg, flags);
-	trace_sched_kthread_create(fn, retval);
-	return retval;
-}
-
 void exit_thread(void)
 {
 	discard_lazy_cpu_state();
@@ -568,6 +554,18 @@ void exit_thread(void)
 
 void flush_thread(void)
 {
+#ifdef CONFIG_PPC64
+	struct thread_info *t = current_thread_info();
+
+	if (test_ti_thread_flag(t, TIF_ABI_PENDING)) {
+		clear_ti_thread_flag(t, TIF_ABI_PENDING);
+		if (test_ti_thread_flag(t, TIF_32BIT))
+			clear_ti_thread_flag(t, TIF_32BIT);
+		else
+			set_ti_thread_flag(t, TIF_32BIT);
+	}
+#endif
+
 	discard_lazy_cpu_state();
 
 	if (current->thread.dabr) {

@@ -63,7 +63,6 @@
 #include <linux/namei.h>
 #include <linux/mnt_namespace.h>
 #include <linux/mm.h>
-#include <linux/swap.h>
 #include <linux/rcupdate.h>
 #include <linux/kallsyms.h>
 #include <linux/stacktrace.h>
@@ -128,12 +127,6 @@ struct pid_entry {
 	NOD(NAME, (S_IFREG|(MODE)), 			\
 		NULL, &proc_single_file_operations,	\
 		{ .proc_show = show } )
-
-/* ANDROID is for special files in /proc. */
-#define ANDROID(NAME, MODE, OTYPE)			\
-	NOD(NAME, (S_IFREG|(MODE)),			\
-		&proc_##OTYPE##_inode_operations,	\
-		&proc_##OTYPE##_operations, {})
 
 /*
  * Count the number of hardlinks for the pid_entry table, excluding the .
@@ -248,8 +241,7 @@ struct mm_struct *mm_for_maps(struct task_struct *task)
 
 	mm = get_task_mm(task);
 	if (mm && mm != current->mm &&
-			!ptrace_may_access(task, PTRACE_MODE_READ) &&
-			!capable(CAP_SYS_RESOURCE)) {
+			!ptrace_may_access(task, PTRACE_MODE_READ)) {
 		mmput(mm);
 		mm = NULL;
 	}
@@ -446,14 +438,16 @@ static const struct file_operations proc_lstats_operations = {
 
 #endif
 
+/* The badness from the OOM killer */
+unsigned long badness(struct task_struct *p, unsigned long uptime);
 static int proc_oom_score(struct task_struct *task, char *buffer)
 {
-	unsigned long points = 0;
+	unsigned long points;
+	struct timespec uptime;
 
+	do_posix_clock_monotonic_gettime(&uptime);
 	read_lock(&tasklist_lock);
-	if (pid_alive(task))
-		points = oom_badness(task, NULL, NULL,
-					totalram_pages + total_swap_pages);
+	points = badness(task->group_leader, uptime.tv_sec);
 	read_unlock(&tasklist_lock);
 	return sprintf(buffer, "%lu\n", points);
 }
@@ -1059,136 +1053,17 @@ static ssize_t oom_adjust_write(struct file *file, const char __user *buf,
 		return -EACCES;
 	}
 
-	/*
-	 * Warn that /proc/pid/oom_adj is deprecated, see
-	 * Documentation/feature-removal-schedule.txt.
-	 */
-	printk_once(KERN_WARNING "%s (%d): /proc/%d/oom_adj is deprecated, "
-			"please use /proc/%d/oom_score_adj instead.\n",
-			current->comm, task_pid_nr(current),
-			task_pid_nr(task), task_pid_nr(task));
 	task->signal->oom_adj = oom_adjust;
-	/*
-	 * Scale /proc/pid/oom_score_adj appropriately ensuring that a maximum
-	 * value is always attainable.
-	 */
-	if (task->signal->oom_adj == OOM_ADJUST_MAX)
-		task->signal->oom_score_adj = OOM_SCORE_ADJ_MAX;
-	else
-		task->signal->oom_score_adj = (oom_adjust * OOM_SCORE_ADJ_MAX) /
-								-OOM_DISABLE;
+
 	unlock_task_sighand(task, &flags);
 	put_task_struct(task);
 
 	return count;
 }
-
-static int oom_adjust_permission(struct inode *inode, int mask)
-{
-	uid_t uid;
-	struct task_struct *p = get_proc_task(inode);
-	if(p) {
-		uid = task_uid(p);
-		put_task_struct(p);
-	}
-
-	/*
-	 * System Server (uid == 1000) is granted access to oom_adj of all 
-	 * android applications (uid > 10000) as and services (uid >= 1000)
-	 */
-	if (p && (current_fsuid() == 1000) && (uid >= 1000)) {
-		if (inode->i_mode >> 6 & mask) {
-			return 0;
-		}
-	}
-
-	/* Fall back to default. */
-	return generic_permission(inode, mask, NULL);
-}
-
-static const struct inode_operations proc_oom_adjust_inode_operations = {
-	.permission	= oom_adjust_permission,
-};
 
 static const struct file_operations proc_oom_adjust_operations = {
 	.read		= oom_adjust_read,
 	.write		= oom_adjust_write,
-};
-
-static ssize_t oom_score_adj_read(struct file *file, char __user *buf,
-					size_t count, loff_t *ppos)
-{
-	struct task_struct *task = get_proc_task(file->f_path.dentry->d_inode);
-	char buffer[PROC_NUMBUF];
-	int oom_score_adj = OOM_SCORE_ADJ_MIN;
-	unsigned long flags;
-	size_t len;
-
-	if (!task)
-		return -ESRCH;
-	if (lock_task_sighand(task, &flags)) {
-		oom_score_adj = task->signal->oom_score_adj;
-		unlock_task_sighand(task, &flags);
-	}
-	put_task_struct(task);
-	len = snprintf(buffer, sizeof(buffer), "%d\n", oom_score_adj);
-	return simple_read_from_buffer(buf, count, ppos, buffer, len);
-}
-
-static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
-					size_t count, loff_t *ppos)
-{
-	struct task_struct *task;
-	char buffer[PROC_NUMBUF];
-	unsigned long flags;
-	long oom_score_adj;
-	int err;
-
-	memset(buffer, 0, sizeof(buffer));
-	if (count > sizeof(buffer) - 1)
-		count = sizeof(buffer) - 1;
-	if (copy_from_user(buffer, buf, count))
-		return -EFAULT;
-
-	err = strict_strtol(strstrip(buffer), 0, &oom_score_adj);
-	if (err)
-		return -EINVAL;
-	if (oom_score_adj < OOM_SCORE_ADJ_MIN ||
-			oom_score_adj > OOM_SCORE_ADJ_MAX)
-		return -EINVAL;
-
-	task = get_proc_task(file->f_path.dentry->d_inode);
-	if (!task)
-		return -ESRCH;
-	if (!lock_task_sighand(task, &flags)) {
-		put_task_struct(task);
-		return -ESRCH;
-	}
-	if (oom_score_adj < task->signal->oom_score_adj &&
-			!capable(CAP_SYS_RESOURCE)) {
-		unlock_task_sighand(task, &flags);
-		put_task_struct(task);
-		return -EACCES;
-	}
-
-	task->signal->oom_score_adj = oom_score_adj;
-	/*
-	 * Scale /proc/pid/oom_adj appropriately ensuring that OOM_DISABLE is
-	 * always attainable.
-	 */
-	if (task->signal->oom_score_adj == OOM_SCORE_ADJ_MIN)
-		task->signal->oom_adj = OOM_DISABLE;
-	else
-		task->signal->oom_adj = (oom_score_adj * OOM_ADJUST_MAX) /
-							OOM_SCORE_ADJ_MAX;
-	unlock_task_sighand(task, &flags);
-	put_task_struct(task);
-	return count;
-}
-
-static const struct file_operations proc_oom_score_adj_operations = {
-	.read		= oom_score_adj_read,
-	.write		= oom_score_adj_write,
 };
 
 #ifdef CONFIG_AUDITSYSCALL
@@ -1389,6 +1264,72 @@ static const struct file_operations proc_pid_sched_operations = {
 };
 
 #endif
+
+static ssize_t comm_write(struct file *file, const char __user *buf,
+				size_t count, loff_t *offset)
+{
+	struct inode *inode = file->f_path.dentry->d_inode;
+	struct task_struct *p;
+	char buffer[TASK_COMM_LEN];
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+
+	if (same_thread_group(current, p))
+		set_task_comm(p, buffer);
+	else
+		count = -EINVAL;
+
+	put_task_struct(p);
+
+	return count;
+}
+
+static int comm_show(struct seq_file *m, void *v)
+{
+	struct inode *inode = m->private;
+	struct task_struct *p;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+
+	task_lock(p);
+	seq_printf(m, "%s\n", p->comm);
+	task_unlock(p);
+
+	put_task_struct(p);
+
+	return 0;
+}
+
+static int comm_open(struct inode *inode, struct file *filp)
+{
+	int ret;
+
+	ret = single_open(filp, comm_show, NULL);
+	if (!ret) {
+		struct seq_file *m = filp->private_data;
+
+		m->private = inode;
+	}
+	return ret;
+}
+
+static const struct file_operations proc_pid_set_comm_operations = {
+	.open		= comm_open,
+	.read		= seq_read,
+	.write		= comm_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /*
  * We added or removed a vma mapping the executable. The vmas are only mapped
@@ -2325,7 +2266,7 @@ static const struct inode_operations proc_attr_dir_inode_operations = {
 
 #endif
 
-#if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
+#ifdef CONFIG_ELF_CORE
 static ssize_t proc_coredump_filter_read(struct file *file, char __user *buf,
 					 size_t count, loff_t *ppos)
 {
@@ -2429,30 +2370,16 @@ static void *proc_self_follow_link(struct dentry *dentry, struct nameidata *nd)
 {
 	struct pid_namespace *ns = dentry->d_sb->s_fs_info;
 	pid_t tgid = task_tgid_nr_ns(current, ns);
-	char *name = ERR_PTR(-ENOENT);
-	if (tgid) {
-		name = __getname();
-		if (!name)
-			name = ERR_PTR(-ENOMEM);
-		else
-			sprintf(name, "%d", tgid);
-	}
-	nd_set_link(nd, name);
-	return NULL;
-}
-
-static void proc_self_put_link(struct dentry *dentry, struct nameidata *nd,
-				void *cookie)
-{
-	char *s = nd_get_link(nd);
-	if (!IS_ERR(s))
-		__putname(s);
+	char tmp[PROC_NUMBUF];
+	if (!tgid)
+		return ERR_PTR(-ENOENT);
+	sprintf(tmp, "%d", task_tgid_nr_ns(current, ns));
+	return ERR_PTR(vfs_follow_link(nd,tmp));
 }
 
 static const struct inode_operations proc_self_inode_operations = {
 	.readlink	= proc_self_readlink,
 	.follow_link	= proc_self_follow_link,
-	.put_link	= proc_self_put_link,
 };
 
 /*
@@ -2643,6 +2570,7 @@ static const struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_SCHED_DEBUG
 	REG("sched",      S_IRUGO|S_IWUSR, proc_pid_sched_operations),
 #endif
+	REG("comm",      S_IRUGO|S_IWUSR, proc_pid_set_comm_operations),
 #ifdef CONFIG_HAVE_ARCH_TRACEHOOK
 	INF("syscall",    S_IRUSR, proc_pid_syscall),
 #endif
@@ -2687,9 +2615,7 @@ static const struct pid_entry tgid_base_stuff[] = {
 	REG("cgroup",  S_IRUGO, proc_cgroup_operations),
 #endif
 	INF("oom_score",  S_IRUGO, proc_oom_score),
-	ANDROID("oom_adj",S_IRUGO|S_IWUSR, oom_adjust),
 	REG("oom_adj",    S_IRUGO|S_IWUSR, proc_oom_adjust_operations),
-	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
 #ifdef CONFIG_AUDITSYSCALL
 	REG("loginuid",   S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUGO, proc_sessionid_operations),
@@ -2697,7 +2623,7 @@ static const struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_FAULT_INJECTION
 	REG("make-it-fail", S_IRUGO|S_IWUSR, proc_fault_inject_operations),
 #endif
-#if defined(USE_ELF_CORE_DUMP) && defined(CONFIG_ELF_CORE)
+#ifdef CONFIG_ELF_CORE
 	REG("coredump_filter", S_IRUGO|S_IWUSR, proc_coredump_filter_operations),
 #endif
 #ifdef CONFIG_TASK_IO_ACCOUNTING
@@ -2979,6 +2905,7 @@ static const struct pid_entry tid_base_stuff[] = {
 #ifdef CONFIG_SCHED_DEBUG
 	REG("sched",     S_IRUGO|S_IWUSR, proc_pid_sched_operations),
 #endif
+	REG("comm",      S_IRUGO|S_IWUSR, proc_pid_set_comm_operations),
 #ifdef CONFIG_HAVE_ARCH_TRACEHOOK
 	INF("syscall",   S_IRUSR, proc_pid_syscall),
 #endif
@@ -3023,7 +2950,6 @@ static const struct pid_entry tid_base_stuff[] = {
 #endif
 	INF("oom_score", S_IRUGO, proc_oom_score),
 	REG("oom_adj",   S_IRUGO|S_IWUSR, proc_oom_adjust_operations),
-	REG("oom_score_adj", S_IRUGO|S_IWUSR, proc_oom_score_adj_operations),
 #ifdef CONFIG_AUDITSYSCALL
 	REG("loginuid",  S_IWUSR|S_IRUGO, proc_loginuid_operations),
 	REG("sessionid",  S_IRUSR, proc_sessionid_operations),

@@ -179,8 +179,8 @@
 /* BCM63xx family SoCs */
 #define PORT_BCM63XX	89
 
-/* TI OMAP CONSOLE */
-#define PORT_OMAP	86
+/* Aeroflex Gaisler GRLIB APBUART */
+#define PORT_APBUART    90
 
 #ifdef __KERNEL__
 
@@ -220,7 +220,6 @@ struct uart_ops {
 	void		(*pm)(struct uart_port *, unsigned int state,
 			      unsigned int oldstate);
 	int		(*set_wake)(struct uart_port *, unsigned int state);
-	void		(*wake_peer)(struct uart_port *);
 
 	/*
 	 * Return a string describing the type of the port
@@ -319,7 +318,6 @@ struct uart_port {
 #define UPF_MAGIC_MULTIPLIER	((__force upf_t) (1 << 16))
 #define UPF_CONS_FLOW		((__force upf_t) (1 << 23))
 #define UPF_SHARE_IRQ		((__force upf_t) (1 << 24))
-#define UPF_TRIGGER_HIGH	((__force upf_t) (1 << 25))
 /* The exact UART type is known and should not be probed.  */
 #define UPF_FIXED_TYPE		((__force upf_t) (1 << 27))
 #define UPF_BOOT_AUTOCONF	((__force upf_t) (1 << 28))

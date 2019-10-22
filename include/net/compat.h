@@ -33,7 +33,11 @@ extern int compat_sock_get_timestamp(struct sock *, struct timeval __user *);
 extern int compat_sock_get_timestampns(struct sock *, struct timespec __user *);
 
 #else /* defined(CONFIG_COMPAT) */
-#define compat_msghdr	msghdr		/* to avoid compiler warnings */
+/*
+ * To avoid compiler warnings:
+ */
+#define compat_msghdr	msghdr
+#define compat_mmsghdr	mmsghdr
 #endif /* defined(CONFIG_COMPAT) */
 
 extern int get_compat_msghdr(struct msghdr *, struct compat_msghdr __user *);
@@ -42,7 +46,7 @@ extern asmlinkage long compat_sys_sendmsg(int,struct compat_msghdr __user *,unsi
 extern asmlinkage long compat_sys_recvmsg(int,struct compat_msghdr __user *,unsigned);
 extern asmlinkage long compat_sys_recvmmsg(int, struct compat_mmsghdr __user *,
 					   unsigned, unsigned,
-					   struct timespec __user *);
+					   struct compat_timespec __user *);
 extern asmlinkage long compat_sys_getsockopt(int, int, int, char __user *, int __user *);
 extern int put_cmsg_compat(struct msghdr*, int, int, int, void *);
 

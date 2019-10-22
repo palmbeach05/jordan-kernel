@@ -100,8 +100,6 @@
 # error Unknown OMAP device
 #endif
 
-#define OMAP_DEVICE_MAGIC 0xf00dcafe
-
 /* Private functions */
 
 /**
@@ -136,18 +134,18 @@ static int _omap_device_activate(struct omap_device *od, u8 ignore_lat)
 		    (od->dev_wakeup_lat <= od->_dev_wakeup_lat_limit))
 			break;
 
-		getnstimeofday(&a);
+		read_persistent_clock(&a);
 
 		/* XXX check return code */
 		odpl->activate_func(od);
 
-		getnstimeofday(&b);
+		read_persistent_clock(&b);
 
 		c = timespec_sub(b, a);
-		act_lat = timespec_to_ns(&c) * NSEC_PER_USEC;
+		act_lat = timespec_to_ns(&c);
 
 		pr_debug("omap_device: %s: pm_lat %d: activate: elapsed time "
-			 "%llu usec\n", od->pdev.name, od->pm_lat_level,
+			 "%llu nsec\n", od->pdev.name, od->pm_lat_level,
 			 act_lat);
 
 		WARN(act_lat > odpl->activate_lat, "omap_device: %s.%d: "
@@ -192,18 +190,18 @@ static int _omap_device_deactivate(struct omap_device *od, u8 ignore_lat)
 		     od->_dev_wakeup_lat_limit))
 			break;
 
-		getnstimeofday(&a);
+		read_persistent_clock(&a);
 
 		/* XXX check return code */
 		odpl->deactivate_func(od);
 
-		getnstimeofday(&b);
+		read_persistent_clock(&b);
 
 		c = timespec_sub(b, a);
-		deact_lat = timespec_to_ns(&c) * NSEC_PER_USEC;
+		deact_lat = timespec_to_ns(&c);
 
 		pr_debug("omap_device: %s: pm_lat %d: deactivate: elapsed time "
-			 "%llu usec\n", od->pdev.name, od->pm_lat_level,
+			 "%llu nsec\n", od->pdev.name, od->pm_lat_level,
 			 deact_lat);
 
 		WARN(deact_lat > odpl->deactivate_lat, "omap_device: %s.%d: "
@@ -390,8 +388,6 @@ struct omap_device *omap_device_build_ss(const char *pdev_name, int pdev_id,
 	od->pm_lats = pm_lats;
 	od->pm_lats_cnt = pm_lats_cnt;
 
-	od->magic = OMAP_DEVICE_MAGIC;
-
 	ret = omap_device_register(od);
 	if (ret)
 		goto odbs_exit4;
@@ -451,8 +447,8 @@ int omap_device_enable(struct platform_device *pdev)
 	od = _find_by_pdev(pdev);
 
 	if (od->_state == OMAP_DEVICE_STATE_ENABLED) {
-		WARN(1, "omap_device: %s.%d: %s() called from invalid state %d\n",
-		     od->pdev.name, od->pdev.id, __func__, od->_state);
+		WARN(1, "omap_device: %s.%d: omap_device_enable() called from "
+		     "invalid state\n", od->pdev.name, od->pdev.id);
 		return -EINVAL;
 	}
 
@@ -463,7 +459,7 @@ int omap_device_enable(struct platform_device *pdev)
 	ret = _omap_device_activate(od, IGNORE_WAKEUP_LAT);
 
 	od->dev_wakeup_lat = 0;
-	od->_dev_wakeup_lat_limit = INT_MAX;
+	od->_dev_wakeup_lat_limit = UINT_MAX;
 	od->_state = OMAP_DEVICE_STATE_ENABLED;
 
 	return ret;
@@ -490,8 +486,8 @@ int omap_device_idle(struct platform_device *pdev)
 	od = _find_by_pdev(pdev);
 
 	if (od->_state != OMAP_DEVICE_STATE_ENABLED) {
-		WARN(1, "omap_device: %s.%d: %s() called from invalid state %d\n",
-		     od->pdev.name, od->pdev.id, __func__, od->_state);
+		WARN(1, "omap_device: %s.%d: omap_device_idle() called from "
+		     "invalid state\n", od->pdev.name, od->pdev.id);
 		return -EINVAL;
 	}
 
@@ -523,8 +519,8 @@ int omap_device_shutdown(struct platform_device *pdev)
 
 	if (od->_state != OMAP_DEVICE_STATE_ENABLED &&
 	    od->_state != OMAP_DEVICE_STATE_IDLE) {
-		WARN(1, "omap_device: %s.%d: %s() called from invalid state %d\n",
-		     od->pdev.name, od->pdev.id, __func__, od->_state);
+		WARN(1, "omap_device: %s.%d: omap_device_shutdown() called "
+		     "from invalid state\n", od->pdev.name, od->pdev.id);
 		return -EINVAL;
 	}
 
@@ -575,18 +571,6 @@ int omap_device_align_pm_lat(struct platform_device *pdev,
 		ret = _omap_device_activate(od, USE_WAKEUP_LAT);
 
 	return ret;
-}
-
-/**
- * omap_device_is_valid - Check if pointer is a valid omap_device
- * @od: struct omap_device *
- *
- * Return whether struct omap_device pointer @od points to a valid
- * omap_device.
- */
-bool omap_device_is_valid(struct omap_device *od)
-{
-	return (od && od->magic == OMAP_DEVICE_MAGIC);
 }
 
 /**

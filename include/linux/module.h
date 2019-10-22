@@ -15,11 +15,9 @@
 #include <linux/stringify.h>
 #include <linux/kobject.h>
 #include <linux/moduleparam.h>
-#include <linux/immediate.h>
-#include <linux/marker.h>
 #include <linux/tracepoint.h>
 
-#include <linux/percpu.h>
+#include <asm/local.h>
 #include <asm/module.h>
 
 #include <trace/events/module.h>
@@ -177,7 +175,6 @@ struct notifier_block;
 
 #ifdef CONFIG_MODULES
 
-extern int modules_disabled; /* for sysctl */
 /* Get/put a kernel symbol (calls must be symmetric) */
 void *__symbol_get(const char *symbol);
 void *__symbol_get_gpl(const char *symbol);
@@ -332,23 +329,12 @@ struct module
 	struct module_notes_attrs *notes_attrs;
 #endif
 
-#ifdef CONFIG_SMP
 	/* Per-cpu data. */
-	void __percpu *percpu;
-	unsigned int percpu_size;
-#endif
+	void *percpu;
 
 	/* The command line arguments (may be mangled).  People like
 	   keeping pointers to this stuff */
 	char *args;
-#ifdef USE_IMMEDIATE
-	struct __imv *immediate;
-	unsigned int num_immediate;
-#endif
-#ifdef CONFIG_MARKERS
-	struct marker *markers;
-	unsigned int num_markers;
-#endif
 #ifdef CONFIG_TRACEPOINTS
 	struct tracepoint *tracepoints;
 	unsigned int num_tracepoints;
@@ -369,9 +355,7 @@ struct module
 
 #ifdef CONFIG_MODULE_UNLOAD
 	/* What modules depend on me? */
-	struct list_head source_list;
-	/* What modules do I depend on? */
-	struct list_head target_list;
+	struct list_head modules_which_use_me;
 
 	/* Who is waiting for us to be unloaded */
 	struct task_struct *waiter;
@@ -379,11 +363,11 @@ struct module
 	/* Destruction function. */
 	void (*exit)(void);
 
-	struct module_ref {
-		unsigned int incs;
-		unsigned int decs;
-		int count;
-	} *refptr;
+#ifdef CONFIG_SMP
+	char *refptr;
+#else
+	local_t ref;
+#endif
 #endif
 
 #ifdef CONFIG_CONSTRUCTORS
@@ -409,7 +393,6 @@ static inline int module_is_live(struct module *mod)
 struct module *__module_text_address(unsigned long addr);
 struct module *__module_address(unsigned long addr);
 bool is_module_address(unsigned long addr);
-bool is_module_percpu_address(unsigned long addr);
 bool is_module_text_address(unsigned long addr);
 
 static inline int within_module_core(unsigned long addr, struct module *mod)
@@ -446,9 +429,8 @@ const struct kernel_symbol *find_symbol(const char *name,
 					bool warn);
 
 /* Walk the exported symbol table */
-bool each_symbol_section(bool (*fn)(const struct symsearch *arr,
-				    struct module *owner,
-				    void *data), void *data);
+bool each_symbol(bool (*fn)(const struct symsearch *arr, struct module *owner,
+			    unsigned int symnum, void *data), void *data);
 
 /* Returns 0 and fills in value, defined and namebuf, or -ERANGE if
    symnum out of range. */
@@ -472,16 +454,25 @@ void __symbol_put(const char *symbol);
 #define symbol_put(x) __symbol_put(MODULE_SYMBOL_PREFIX #x)
 void symbol_put_addr(void *addr);
 
+static inline local_t *__module_ref_addr(struct module *mod, int cpu)
+{
+#ifdef CONFIG_SMP
+	return (local_t *) (mod->refptr + per_cpu_offset(cpu));
+#else
+	return &mod->ref;
+#endif
+}
+
 /* Sometimes we know we already have a refcount, and it's easier not
    to handle the error case (which only happens with rmmod --wait). */
 static inline void __module_get(struct module *module)
 {
 	if (module) {
-		preempt_disable();
-		__this_cpu_inc(module->refptr->count);
+		unsigned int cpu = get_cpu();
+		local_inc(__module_ref_addr(module, cpu));
 		trace_module_get(module, _THIS_IP_,
-				 __this_cpu_read(module->refptr->count));
-		preempt_enable();
+				 local_read(__module_ref_addr(module, cpu)));
+		put_cpu();
 	}
 }
 
@@ -490,17 +481,15 @@ static inline int try_module_get(struct module *module)
 	int ret = 1;
 
 	if (module) {
-		preempt_disable();
-
+		unsigned int cpu = get_cpu();
 		if (likely(module_is_live(module))) {
-			__this_cpu_inc(module->refptr->count);
+			local_inc(__module_ref_addr(module, cpu));
 			trace_module_get(module, _THIS_IP_,
-				__this_cpu_read(module->refptr->count));
+				local_read(__module_ref_addr(module, cpu)));
 		}
 		else
 			ret = 0;
-
-		preempt_enable();
+		put_cpu();
 	}
 	return ret;
 }
@@ -549,10 +538,6 @@ int register_module_notifier(struct notifier_block * nb);
 int unregister_module_notifier(struct notifier_block * nb);
 
 extern void print_modules(void);
-extern void list_modules(void *call_data);
-
-extern void module_update_markers(void);
-extern int module_get_iter_markers(struct marker_iter *iter);
 
 extern void module_update_tracepoints(void);
 extern int module_get_iter_tracepoints(struct tracepoint_iter *iter);
@@ -668,14 +653,6 @@ static inline void print_modules(void)
 {
 }
 
-static inline void list_modules(void *call_data)
-{
-}
-
-static inline void module_update_markers(void)
-{
-}
-
 static inline void module_update_tracepoints(void)
 {
 }
@@ -685,17 +662,45 @@ static inline int module_get_iter_tracepoints(struct tracepoint_iter *iter)
 	return 0;
 }
 
-static inline int module_get_iter_markers(struct marker_iter *iter)
+#endif /* CONFIG_MODULES */
+
+struct device_driver;
+#ifdef CONFIG_SYSFS
+struct module;
+
+extern struct kset *module_kset;
+extern struct kobj_type module_ktype;
+extern int module_sysfs_initialized;
+
+int mod_sysfs_init(struct module *mod);
+int mod_sysfs_setup(struct module *mod,
+			   struct kernel_param *kparam,
+			   unsigned int num_params);
+int module_add_modinfo_attrs(struct module *mod);
+void module_remove_modinfo_attrs(struct module *mod);
+
+#else /* !CONFIG_SYSFS */
+
+static inline int mod_sysfs_init(struct module *mod)
 {
 	return 0;
 }
 
-#endif /* CONFIG_MODULES */
+static inline int mod_sysfs_setup(struct module *mod,
+			   struct kernel_param *kparam,
+			   unsigned int num_params)
+{
+	return 0;
+}
 
-#ifdef CONFIG_SYSFS
-extern struct kset *module_kset;
-extern struct kobj_type module_ktype;
-extern int module_sysfs_initialized;
+static inline int module_add_modinfo_attrs(struct module *mod)
+{
+	return 0;
+}
+
+static inline void module_remove_modinfo_attrs(struct module *mod)
+{ }
+
 #endif /* CONFIG_SYSFS */
 
 #define symbol_request(x) try_then_request_module(symbol_get(x), "symbol:" #x)
@@ -706,16 +711,17 @@ extern int module_sysfs_initialized;
 
 
 #ifdef CONFIG_GENERIC_BUG
-void module_bug_finalize(const Elf_Ehdr *, const Elf_Shdr *,
+int  module_bug_finalize(const Elf_Ehdr *, const Elf_Shdr *,
 			 struct module *);
 void module_bug_cleanup(struct module *);
 
 #else	/* !CONFIG_GENERIC_BUG */
 
-static inline void module_bug_finalize(const Elf_Ehdr *hdr,
+static inline int  module_bug_finalize(const Elf_Ehdr *hdr,
 					const Elf_Shdr *sechdrs,
 					struct module *mod)
 {
+	return 0;
 }
 static inline void module_bug_cleanup(struct module *mod) {}
 #endif	/* CONFIG_GENERIC_BUG */

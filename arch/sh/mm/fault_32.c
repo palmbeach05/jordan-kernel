@@ -16,16 +16,10 @@
 #include <linux/hardirq.h>
 #include <linux/kprobes.h>
 #include <linux/perf_event.h>
-#include <trace/fault.h>
 #include <asm/io_trapped.h>
 #include <asm/system.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
-
-DEFINE_TRACE(page_fault_entry);
-DEFINE_TRACE(page_fault_exit);
-DEFINE_TRACE(page_fault_nosem_entry);
-DEFINE_TRACE(page_fault_nosem_exit);
 
 static inline int notify_page_fault(struct pt_regs *regs, int trap)
 {
@@ -204,14 +198,7 @@ good_area:
 	 * the fault.
 	 */
 survive:
-	trace_page_fault_entry(regs,
-		({
-			unsigned long trapnr;
-			asm volatile("stc	r2_bank,%0": "=r" (trapnr));
-			trapnr;
-		}) >> 5, mm, vma, address, writeaccess);
 	fault = handle_mm_fault(mm, vma, address, writeaccess ? FAULT_FLAG_WRITE : 0);
-	trace_page_fault_exit(fault);
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
@@ -241,18 +228,11 @@ bad_area:
 
 bad_area_nosemaphore:
 	if (user_mode(regs)) {
-		trace_page_fault_nosem_entry(regs,
-		({
-			unsigned long trapnr;
-			asm volatile("stc	r2_bank,%0": "=r" (trapnr));
-			trapnr;
-		}) >> 5, address);
 		info.si_signo = SIGSEGV;
 		info.si_errno = 0;
 		info.si_code = si_code;
 		info.si_addr = (void *) address;
 		force_sig_info(SIGSEGV, &info, tsk);
-		trace_page_fault_nosem_exit();
 		return;
 	}
 
@@ -347,11 +327,6 @@ handle_tlbmiss(struct pt_regs *regs, unsigned long writeaccess,
 	pmd_t *pmd;
 	pte_t *pte;
 	pte_t entry;
-	int ret;
-	int irqvec;
-
-	irqvec = lookup_exception_vector();
-	trace_page_fault_nosem_entry(regs, irqvec, address);
 
 	/*
 	 * We don't take page faults for P1, P2, and parts of P4, these
@@ -361,34 +336,24 @@ handle_tlbmiss(struct pt_regs *regs, unsigned long writeaccess,
 	if (address >= P3SEG && address < P3_ADDR_MAX) {
 		pgd = pgd_offset_k(address);
 	} else {
-		if (unlikely(address >= TASK_SIZE || !current->mm)) {
-			ret = 1;
-			goto out;
-		}
+		if (unlikely(address >= TASK_SIZE || !current->mm))
+			return 1;
 
 		pgd = pgd_offset(current->mm, address);
 	}
 
 	pud = pud_offset(pgd, address);
-	if (pud_none_or_clear_bad(pud)) {
-		ret = 1;
-		goto out;
-	}
+	if (pud_none_or_clear_bad(pud))
+		return 1;
 	pmd = pmd_offset(pud, address);
-	if (pmd_none_or_clear_bad(pmd)) {
-		ret = 1;
-		goto out;
-	}
+	if (pmd_none_or_clear_bad(pmd))
+		return 1;
 	pte = pte_offset_kernel(pmd, address);
 	entry = *pte;
-	if (unlikely(pte_none(entry) || pte_not_present(entry))) {
-		ret = 1;
-		goto out;
-	}
-	if (unlikely(writeaccess && !pte_write(entry))) {
-		ret = 1;
-		goto out;
-	}
+	if (unlikely(pte_none(entry) || pte_not_present(entry)))
+		return 1;
+	if (unlikely(writeaccess && !pte_write(entry)))
+		return 1;
 
 	if (writeaccess)
 		entry = pte_mkdirty(entry);
@@ -407,8 +372,6 @@ handle_tlbmiss(struct pt_regs *regs, unsigned long writeaccess,
 #endif
 
 	update_mmu_cache(NULL, address, entry);
-	ret = 0;
-out:
-	trace_page_fault_nosem_exit();
-	return ret;
+
+	return 0;
 }
